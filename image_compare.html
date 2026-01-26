@@ -1,0 +1,2276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Image Compare</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a1a1a;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+#dropzone {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px dashed #444;
+  margin: 20px;
+  border-radius: 12px;
+  transition: border-color 0.2s, background 0.2s;
+}
+#dropzone.dragover {
+  border-color: #0af;
+  background: rgba(0, 170, 255, 0.1);
+}
+#dropzone.hidden { display: none; }
+.drop-text {
+  text-align: center;
+  color: #888;
+}
+.drop-text h2 { font-size: 24px; margin-bottom: 10px; }
+.drop-text p { font-size: 14px; }
+
+#viewer {
+  display: none;
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+}
+#viewer.active { display: block; }
+#viewer.dragging { cursor: grabbing; }
+
+#canvas {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: center center;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+#thumbnail {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 4px;
+  display: none;
+}
+#thumbnail.active { display: block; }
+#thumb-canvas {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+#thumb-viewport {
+  position: absolute;
+  border: 2px solid #f0f;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+#info {
+  background: #2a2a2a;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  flex-shrink: 0;
+  min-height: 36px;
+  gap: 12px;
+}
+#info.hidden { display: none; }
+#modality-selector {
+  display: flex;
+  gap: 2px 4px;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: center;
+  min-width: 0;
+}
+#status {
+  color: #888;
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  word-break: break-all;
+  line-height: 1.2;
+}
+.modality-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.15s;
+  border: none;
+  color: #000;
+  user-select: none;
+  position: relative;
+  flex-shrink: 0;
+}
+.modality-btn:hover {
+  transform: scale(1.05);
+}
+.modality-btn.active {
+  opacity: 1;
+  box-shadow: 0 0 0 2px #fff;
+}
+.modality-btn.inactive {
+  opacity: 0.4;
+}
+#help-btn {
+  background: #444;
+  color: #fff;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+#help-btn:hover {
+  background: #555;
+}
+.reorder-btn {
+  background: #444;
+  color: #fff;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.reorder-btn:hover {
+  background: #555;
+}
+.reorder-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+#reorder-buttons {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  align-items: center;
+}
+#help-modal {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.8);
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+#help-modal.active { display: flex; }
+#help-modal .modal-content {
+  max-width: 450px;
+}
+#help-modal h3 {
+  color: #0af;
+  margin-bottom: 15px;
+}
+#help-modal table {
+  width: 100%;
+  text-align: left;
+  border-collapse: collapse;
+}
+#help-modal td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #444;
+}
+#help-modal td:first-child {
+  color: #0af;
+  font-family: monospace;
+  white-space: nowrap;
+}
+
+/* Progress bar */
+#progress-container {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.8);
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 12px 20px;
+  z-index: 50;
+  display: none;
+  min-width: 250px;
+  text-align: center;
+}
+#progress-container.active { display: block; }
+#progress-text {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #aaa;
+}
+#progress-bar {
+  width: 100%;
+  height: 6px;
+  background: #333;
+  border-radius: 3px;
+  overflow: hidden;
+}
+#progress-fill {
+  height: 100%;
+  background: #0af;
+  width: 0%;
+  transition: width 0.1s;
+}
+
+/* Carousel styles */
+#carousel {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  border-right: 1px solid #333;
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 10;
+  scroll-behavior: auto;  /* Prevent smooth scroll during resize */
+}
+#carousel.active { display: block; }
+#carousel.resizing .carousel-row,
+#carousel.resizing .carousel-thumb {
+  transition: none !important;  /* Disable transitions during resize */
+}
+#carousel::-webkit-scrollbar {
+  width: 6px;
+}
+#carousel::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+#carousel::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 3px;
+}
+#carousel::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+.carousel-row {
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-bottom: 1px solid #222;
+  transition: background 0.15s;
+}
+.carousel-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.carousel-row.current {
+  background: rgba(255, 255, 255, 0.1);
+}
+.carousel-thumb {
+  object-fit: contain;
+  background: #111;
+  border-radius: 3px;
+  border: 2px solid transparent;
+  transition: border-color 0.15s, opacity 0.15s;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.carousel-thumb:hover {
+  opacity: 1;
+}
+.carousel-thumb.active {
+  opacity: 1;
+}
+.carousel-thumb.selected {
+  border-color: #f0f;
+}
+
+/* Carousel resize handle */
+#carousel-resize {
+  display: none;
+  position: absolute;
+  left: 216px;  /* CAROUSEL_WIDTH - 4 */
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  background: transparent;
+  z-index: 11;
+}
+#carousel-resize.active {
+  display: block;
+}
+#carousel-resize:hover,
+#carousel-resize.dragging {
+  background: rgba(0, 170, 255, 0.3);
+}
+
+#error-modal {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.8);
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+#error-modal.active { display: flex; }
+.modal-content {
+  background: #2a2a2a;
+  padding: 30px;
+  border-radius: 12px;
+  text-align: center;
+  max-width: 400px;
+}
+.modal-content h3 { margin-bottom: 15px; color: #f66; }
+.modal-content p { margin-bottom: 20px; line-height: 1.6; }
+.modal-buttons { display: flex; gap: 10px; justify-content: center; }
+.btn {
+  padding: 10px 24px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.btn-primary { background: #0af; color: #000; }
+.btn-secondary { background: #444; color: #fff; }
+.btn:hover { opacity: 0.9; }
+</style>
+</head>
+<body>
+
+<div id="dropzone">
+  <div class="drop-text">
+    <h2>Drop 2+ Images or a Folder</h2>
+    <p>Drop multiple images to form a tuple, or a folder with subdirectories as modalities</p>
+    <p style="margin-top: 12px;">
+      <button id="select-folder-btn" class="btn btn-primary">Select Folder</button>
+    </p>
+    <p style="margin-top: 20px; color: #666; font-size: 12px; line-height: 1.8;">
+      ←→: modality | ↑↓: tuple | Space: flip | 1-9: jump to modality<br>
+      [ ]: reorder modality | Scroll: zoom | Drag: pan | Esc: reset
+    </p>
+  </div>
+</div>
+
+<div id="viewer">
+  <div id="carousel"></div>
+  <div id="carousel-resize"></div>
+  <div id="progress-container">
+    <div id="progress-text">Loading thumbnails...</div>
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+  </div>
+  <canvas id="canvas"></canvas>
+  <div id="thumbnail">
+    <canvas id="thumb-canvas"></canvas>
+    <div id="thumb-viewport"></div>
+  </div>
+</div>
+
+<div id="info" class="hidden">
+  <div id="reorder-buttons">
+    <button id="reorder-left" class="reorder-btn" title="Move modality left ([)">←</button>
+    <button id="reorder-right" class="reorder-btn" title="Move modality right (])">→</button>
+  </div>
+  <div id="modality-selector"></div>
+  <span id="status">Loading...</span>
+  <button id="help-btn" title="Keyboard shortcuts">?</button>
+</div>
+
+<div id="help-modal">
+  <div class="modal-content">
+    <h3>Keyboard Shortcuts</h3>
+    <table>
+      <tr><td>← →</td><td>Switch modality</td></tr>
+      <tr><td>↑ ↓</td><td>Previous/next tuple</td></tr>
+      <tr><td>Space</td><td>Flip to previous modality (hold)</td></tr>
+      <tr><td>1-9</td><td>Jump to modality N</td></tr>
+      <tr><td>[ ]</td><td>Reorder current modality</td></tr>
+      <tr><td>Scroll</td><td>Zoom in/out</td></tr>
+      <tr><td>Drag</td><td>Pan image</td></tr>
+      <tr><td>Esc</td><td>Reset zoom (2x: back to start)</td></tr>
+    </table>
+    <div class="modal-buttons" style="margin-top: 20px;">
+      <button class="btn btn-primary" onclick="closeHelpModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="error-modal">
+  <div class="modal-content">
+    <h3>Aspect Ratio Mismatch</h3>
+    <p id="error-text"></p>
+    <div class="modal-buttons">
+      <button class="btn btn-secondary" onclick="cancelLoad()">Cancel</button>
+      <button class="btn btn-primary" onclick="continueLoad()">Continue Anyway</button>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="file-input" accept="image/*" multiple style="display:none">
+<input type="file" id="folder-input" webkitdirectory style="display:none">
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const viewer = document.getElementById('viewer');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const info = document.getElementById('info');
+const status = document.getElementById('status');
+const modalitySelector = document.getElementById('modality-selector');
+const errorModal = document.getElementById('error-modal');
+const errorText = document.getElementById('error-text');
+const fileInput = document.getElementById('file-input');
+const thumbnail = document.getElementById('thumbnail');
+const thumbCanvas = document.getElementById('thumb-canvas');
+const thumbCtx = thumbCanvas.getContext('2d');
+const thumbViewport = document.getElementById('thumb-viewport');
+const carousel = document.getElementById('carousel');
+const carouselResize = document.getElementById('carousel-resize');
+const progressContainer = document.getElementById('progress-container');
+const progressText = document.getElementById('progress-text');
+const progressFill = document.getElementById('progress-fill');
+
+const THUMB_MAX_SIZE = 150;
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'ppmx'];
+
+// Configurable carousel width - thumbnails scale proportionally
+let CAROUSEL_WIDTH = 220;
+let CAROUSEL_THUMB_SIZE = 50;  // Base size, will be recalculated
+
+// Modality colors - cycle through these
+const MODALITY_COLORS = [
+  '#0f0',    // green
+  '#f60',    // orange
+  '#0af',    // cyan
+  '#f0f',    // magenta
+  '#ff0',    // yellow
+  '#f44',    // red
+  '#4f4',    // light green
+  '#44f',    // blue
+];
+
+// Current tuple's images (array of {img, name, width, height, url, modality})
+let images = [];
+let currentIndex = 0;
+let previousIndex = 0;  // For spacebar flip behavior
+let zoom = 1;
+let panX = 0, panY = 0;
+let isDragging = false;
+let dragStartX, dragStartY;
+let pendingImages = null;
+let isReset = false;
+let spaceDown = false;
+
+// Multi-tuple mode
+let tuples = [];
+let currentTupleIndex = 0;
+let modalities = [];  // Array of modality names
+let modalityColors = [];  // Color assigned to each modality
+let isMultiTupleMode = false;
+
+// Thumbnail cache: Map of File object -> canvas data URL (file-based key survives reordering)
+const thumbnailCache = new WeakMap();
+
+// Preloaded tuples cache: Map of tupleIdx -> loaded images array
+const preloadedTuples = new Map();
+const PRELOAD_AHEAD = 3;  // Number of tuples to preload ahead/behind
+
+// Help modal
+const helpModal = document.getElementById('help-modal');
+const helpBtn = document.getElementById('help-btn');
+
+helpBtn.addEventListener('click', () => {
+  helpModal.classList.add('active');
+});
+
+function closeHelpModal() {
+  helpModal.classList.remove('active');
+}
+
+// Reorder buttons
+const reorderLeftBtn = document.getElementById('reorder-left');
+const reorderRightBtn = document.getElementById('reorder-right');
+
+reorderLeftBtn.addEventListener('click', () => moveCurrentModality(-1));
+reorderRightBtn.addEventListener('click', () => moveCurrentModality(1));
+
+// Keyboard navigation state
+let isLoadingTuple = false;  // Prevent concurrent tuple loads
+let lastKeyNavTime = 0;
+const KEY_NAV_THROTTLE = 100;  // ms between tuple changes when holding key
+
+// Drag and drop
+dropzone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  dropzone.classList.add('dragover');
+});
+
+dropzone.addEventListener('dragleave', () => {
+  dropzone.classList.remove('dragover');
+});
+
+dropzone.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  dropzone.classList.remove('dragover');
+
+  const items = e.dataTransfer.items;
+  if (!items) {
+    handleFiles(e.dataTransfer.files);
+    return;
+  }
+
+  // Check if we have directories using the modern File System Access API
+  const entries = [];
+  for (let i = 0; i < items.length; i++) {
+    const entry = items[i].webkitGetAsEntry ? items[i].webkitGetAsEntry() : null;
+    if (entry) entries.push({ entry, item: items[i] });
+  }
+
+  const dirs = entries.filter(e => e.entry.isDirectory);
+
+  if (dirs.length === 1 && entries.length === 1) {
+    // Single directory - check for subdirectories as modalities
+    try {
+      if (items[0].getAsFileSystemHandle) {
+        const handle = await items[0].getAsFileSystemHandle();
+        if (handle.kind === 'directory') {
+          await handleSingleDirectoryModern(handle);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Modern API failed, trying legacy:', err);
+    }
+
+    // Fallback to legacy API
+    try {
+      await handleSingleDirectory(dirs[0].entry);
+    } catch (err) {
+      console.error('Directory handling error:', err);
+      alert('Error reading directory. Try using Chrome or select files directly.');
+    }
+  } else if (dirs.length >= 2) {
+    alert('Please drop a single folder with subdirectories as modalities, or multiple image files.');
+  } else {
+    // Regular files mode - form a single tuple
+    handleFiles(e.dataTransfer.files);
+  }
+});
+
+dropzone.addEventListener('click', (e) => {
+  if (e.target.tagName === 'BUTTON') return;
+  fileInput.click();
+});
+fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+// Folder selection via button
+const selectFolderBtn = document.getElementById('select-folder-btn');
+const folderInput = document.getElementById('folder-input');
+
+selectFolderBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  folderInput.value = '';
+  folderInput.click();
+});
+
+folderInput.addEventListener('change', async (e) => {
+  if (e.target.files.length > 0) {
+    await handleFolderInput(e.target.files);
+  }
+});
+
+async function handleFolderInput(files) {
+  // Group files by their immediate parent directory
+  const filesByDir = new Map();
+
+  for (const file of files) {
+    const pathParts = file.webkitRelativePath.split('/');
+    if (pathParts.length < 2) continue;
+
+    // Check if it's in a subdirectory (pathParts.length >= 3 means root/subdir/file)
+    if (pathParts.length >= 3) {
+      const subdir = pathParts[1];
+      if (!filesByDir.has(subdir)) {
+        filesByDir.set(subdir, []);
+      }
+      const ext = file.name.split('.').pop().toLowerCase();
+      if (IMAGE_EXTENSIONS.includes(ext)) {
+        filesByDir.set(subdir, [...filesByDir.get(subdir), file]);
+      }
+    }
+  }
+
+  if (filesByDir.size < 2) {
+    // No subdirectories, treat as single tuple
+    const imageFiles = Array.from(files).filter(f => {
+      const ext = f.name.split('.').pop().toLowerCase();
+      return IMAGE_EXTENSIONS.includes(ext);
+    });
+
+    if (imageFiles.length >= 2) {
+      await handleFilesAsTuple(imageFiles);
+    } else {
+      alert('Need at least 2 images or a folder with subdirectories as modalities');
+    }
+    return;
+  }
+
+  // Process subdirectories as modalities
+  await processSubdirectoriesAsModalities(filesByDir);
+}
+
+async function handleSingleDirectory(dirEntry) {
+  // Read subdirectories
+  const subdirs = [];
+
+  await new Promise((resolve, reject) => {
+    const reader = dirEntry.createReader();
+
+    function readBatch() {
+      reader.readEntries((entries) => {
+        if (entries.length === 0) {
+          resolve();
+          return;
+        }
+        for (const entry of entries) {
+          if (entry.isDirectory) {
+            subdirs.push(entry);
+          }
+        }
+        readBatch();
+      }, reject);
+    }
+    readBatch();
+  });
+
+  if (subdirs.length < 2) {
+    alert('Folder must contain at least 2 subdirectories as modalities');
+    return;
+  }
+
+  // Read files from each subdirectory
+  const filesByDir = new Map();
+  for (const subdir of subdirs) {
+    const files = await readDirectory(subdir);
+    if (files.length > 0) {
+      filesByDir.set(subdir.name, files);
+    }
+  }
+
+  if (filesByDir.size < 2) {
+    alert('Need at least 2 subdirectories with images');
+    return;
+  }
+
+  await processSubdirectoriesAsModalitiesLegacy(filesByDir);
+}
+
+async function handleSingleDirectoryModern(dirHandle) {
+  const subdirs = [];
+
+  for await (const entry of dirHandle.values()) {
+    if (entry.kind === 'directory') {
+      subdirs.push(entry);
+    }
+  }
+
+  if (subdirs.length < 2) {
+    alert('Folder must contain at least 2 subdirectories as modalities');
+    return;
+  }
+
+  // Read files from each subdirectory
+  const filesByDir = new Map();
+  for (const subdir of subdirs) {
+    const files = await readDirectoryModern(subdir);
+    if (files.length > 0) {
+      filesByDir.set(subdir.name, files);
+    }
+  }
+
+  if (filesByDir.size < 2) {
+    alert('Need at least 2 subdirectories with images');
+    return;
+  }
+
+  await processSubdirectoriesAsModalitiesModern(filesByDir);
+}
+
+async function processSubdirectoriesAsModalities(filesByDir) {
+  // Sort modalities alphabetically
+  modalities = Array.from(filesByDir.keys()).sort();
+  modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
+
+  // Get files for each modality, sorted
+  const modalityFiles = modalities.map(mod => {
+    const files = filesByDir.get(mod);
+    return files.sort((a, b) => naturalSort({ name: a.name }, { name: b.name }));
+  });
+
+  // Find minimum file count
+  const minCount = Math.min(...modalityFiles.map(f => f.length));
+
+  if (minCount === 0) {
+    alert('One or more modalities have no images');
+    return;
+  }
+
+  // Warn if counts differ
+  const counts = modalityFiles.map(f => f.length);
+  if (Math.max(...counts) !== Math.min(...counts)) {
+    const countStr = modalities.map((m, i) => `${m}: ${counts[i]}`).join(', ');
+    alert(`Warning: Modalities have different image counts (${countStr}). Using ${minCount} tuples.`);
+  }
+
+  // Create tuples
+  tuples = [];
+  for (let i = 0; i < minCount; i++) {
+    const tupleImages = [];
+    const names = [];
+
+    for (let m = 0; m < modalities.length; m++) {
+      const file = modalityFiles[m][i];
+      tupleImages.push({
+        file,
+        modality: modalities[m]
+      });
+      names.push(file.name);
+    }
+
+    // Tuple name is what the filenames share
+    const tupleName = findCommonSubstring(names) || `Tuple ${i + 1}`;
+
+    tuples.push({
+      name: tupleName,
+      imageData: tupleImages
+    });
+  }
+
+  isMultiTupleMode = tuples.length > 1;
+  currentTupleIndex = 0;
+
+  // Calculate carousel thumb size based on number of modalities
+  updateCarouselThumbSize();
+
+  await loadTuple(0);
+}
+
+async function processSubdirectoriesAsModalitiesLegacy(filesByDir) {
+  // Sort modalities alphabetically
+  modalities = Array.from(filesByDir.keys()).sort();
+  modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
+
+  // Get files for each modality, sorted
+  const modalityFiles = modalities.map(mod => {
+    const files = filesByDir.get(mod);
+    return files.sort(naturalSort);
+  });
+
+  // Find minimum file count
+  const minCount = Math.min(...modalityFiles.map(f => f.length));
+
+  if (minCount === 0) {
+    alert('One or more modalities have no images');
+    return;
+  }
+
+  // Warn if counts differ
+  const counts = modalityFiles.map(f => f.length);
+  if (Math.max(...counts) !== Math.min(...counts)) {
+    const countStr = modalities.map((m, i) => `${m}: ${counts[i]}`).join(', ');
+    alert(`Warning: Modalities have different image counts (${countStr}). Using ${minCount} tuples.`);
+  }
+
+  // Create tuples
+  tuples = [];
+  for (let i = 0; i < minCount; i++) {
+    const tupleImages = [];
+    const names = [];
+
+    for (let m = 0; m < modalities.length; m++) {
+      const fileData = modalityFiles[m][i];
+      tupleImages.push({
+        file: fileData.file,
+        modality: modalities[m]
+      });
+      names.push(fileData.name);
+    }
+
+    // Tuple name is what the filenames share
+    const tupleName = findCommonSubstring(names) || `Tuple ${i + 1}`;
+
+    tuples.push({
+      name: tupleName,
+      imageData: tupleImages
+    });
+  }
+
+  isMultiTupleMode = tuples.length > 1;
+  currentTupleIndex = 0;
+
+  updateCarouselThumbSize();
+
+  await loadTuple(0);
+}
+
+async function processSubdirectoriesAsModalitiesModern(filesByDir) {
+  // Sort modalities alphabetically
+  modalities = Array.from(filesByDir.keys()).sort();
+  modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
+
+  // Get files for each modality, sorted
+  const modalityFiles = modalities.map(mod => {
+    const files = filesByDir.get(mod);
+    return files.sort(naturalSort);
+  });
+
+  // Find minimum file count
+  const minCount = Math.min(...modalityFiles.map(f => f.length));
+
+  if (minCount === 0) {
+    alert('One or more modalities have no images');
+    return;
+  }
+
+  // Warn if counts differ
+  const counts = modalityFiles.map(f => f.length);
+  if (Math.max(...counts) !== Math.min(...counts)) {
+    const countStr = modalities.map((m, i) => `${m}: ${counts[i]}`).join(', ');
+    alert(`Warning: Modalities have different image counts (${countStr}). Using ${minCount} tuples.`);
+  }
+
+  // Create tuples
+  tuples = [];
+  for (let i = 0; i < minCount; i++) {
+    const tupleImages = [];
+    const names = [];
+
+    for (let m = 0; m < modalities.length; m++) {
+      const fileData = modalityFiles[m][i];
+      tupleImages.push({
+        file: fileData.file,
+        modality: modalities[m]
+      });
+      names.push(fileData.name);
+    }
+
+    // Tuple name is what the filenames share
+    const tupleName = findCommonSubstring(names) || `Tuple ${i + 1}`;
+
+    tuples.push({
+      name: tupleName,
+      imageData: tupleImages
+    });
+  }
+
+  isMultiTupleMode = tuples.length > 1;
+  currentTupleIndex = 0;
+
+  updateCarouselThumbSize();
+
+  await loadTuple(0);
+}
+
+function updateCarouselThumbSize() {
+  // Calculate thumb size so all modalities fit in carousel width
+  // Account for padding (6px each side) and gaps (2px between thumbs)
+  const numModalities = modalities.length;
+  const availableWidth = CAROUSEL_WIDTH - 12 - (numModalities - 1) * 2;
+  CAROUSEL_THUMB_SIZE = Math.floor(availableWidth / numModalities);
+  CAROUSEL_THUMB_SIZE = Math.max(30, CAROUSEL_THUMB_SIZE);  // Minimum 30px, no maximum
+}
+
+// Find common substring among filenames (for tuple naming)
+function findCommonSubstring(names) {
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0].replace(/\.[^.]+$/, '');  // Remove extension
+
+  // Remove extensions
+  const basenames = names.map(n => n.replace(/\.[^.]+$/, ''));
+
+  // Find longest common substring
+  let common = basenames[0];
+
+  for (let i = 1; i < basenames.length; i++) {
+    common = longestCommonSubstring(common, basenames[i]);
+    if (!common) break;
+  }
+
+  // Clean up: remove trailing/leading underscores, dashes, spaces
+  common = common.replace(/^[\s_-]+|[\s_-]+$/g, '');
+
+  return common;
+}
+
+function longestCommonSubstring(s1, s2) {
+  if (!s1 || !s2) return '';
+
+  const len1 = s1.length;
+  const len2 = s2.length;
+
+  // Build matrix of common suffixes
+  const dp = Array(len1 + 1).fill(null).map(() => Array(len2 + 1).fill(0));
+  let maxLen = 0;
+  let endPos = 0;
+
+  for (let i = 1; i <= len1; i++) {
+    for (let j = 1; j <= len2; j++) {
+      if (s1[i-1] === s2[j-1]) {
+        dp[i][j] = dp[i-1][j-1] + 1;
+        if (dp[i][j] > maxLen) {
+          maxLen = dp[i][j];
+          endPos = i;
+        }
+      }
+    }
+  }
+
+  return s1.substring(endPos - maxLen, endPos);
+}
+
+// Find difference in filenames (for modality naming when dropping files)
+function findDifferingParts(names) {
+  if (names.length < 2) return names;
+
+  // Remove extensions
+  const basenames = names.map(n => n.replace(/\.[^.]+$/, ''));
+
+  // Find common prefix and suffix
+  let prefix = basenames[0];
+  let suffix = basenames[0];
+
+  for (const name of basenames) {
+    // Find common prefix
+    let i = 0;
+    while (i < prefix.length && i < name.length && prefix[i] === name[i]) i++;
+    prefix = prefix.substring(0, i);
+
+    // Find common suffix
+    let j = 0;
+    while (j < suffix.length && j < name.length &&
+           suffix[suffix.length - 1 - j] === name[name.length - 1 - j]) j++;
+    suffix = suffix.substring(suffix.length - j);
+  }
+
+  // Extract the differing parts
+  return basenames.map(name => {
+    let diff = name.substring(prefix.length, name.length - suffix.length);
+    // Clean up
+    diff = diff.replace(/^[\s_-]+|[\s_-]+$/g, '');
+    return diff || name;
+  });
+}
+
+async function readDirectory(dirEntry) {
+  const allEntries = [];
+
+  await new Promise((resolve, reject) => {
+    const reader = dirEntry.createReader();
+
+    function readBatch() {
+      reader.readEntries((entries) => {
+        if (entries.length === 0) {
+          resolve();
+          return;
+        }
+        for (const entry of entries) {
+          if (entry.isFile) {
+            const ext = entry.name.split('.').pop().toLowerCase();
+            if (IMAGE_EXTENSIONS.includes(ext)) {
+              allEntries.push(entry);
+            }
+          }
+        }
+        readBatch();
+      }, (err) => {
+        console.error('readEntries error:', err);
+        reject(err);
+      });
+    }
+    readBatch();
+  });
+
+  // Convert entries to files
+  const allFiles = [];
+  for (const entry of allEntries) {
+    try {
+      const file = await getFileFromEntry(entry);
+      if (file) {
+        allFiles.push({ name: entry.name, file });
+      }
+    } catch (err) {
+      console.warn(`Skipping ${entry.name}:`, err);
+    }
+  }
+
+  return allFiles;
+}
+
+function getFileFromEntry(entry) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error('Timeout reading file'));
+    }, 5000);
+
+    try {
+      entry.file(
+        (file) => {
+          clearTimeout(timeout);
+          resolve(file);
+        },
+        (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        }
+      );
+    } catch (err) {
+      clearTimeout(timeout);
+      reject(err);
+    }
+  });
+}
+
+function naturalSort(a, b) {
+  return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+async function readDirectoryModern(dirHandle) {
+  const files = [];
+  for await (const entry of dirHandle.values()) {
+    if (entry.kind === 'file') {
+      const ext = entry.name.split('.').pop().toLowerCase();
+      if (IMAGE_EXTENSIONS.includes(ext)) {
+        try {
+          const file = await entry.getFile();
+          files.push({ name: entry.name, file });
+        } catch (err) {
+          console.warn(`Skipping ${entry.name}:`, err);
+        }
+      }
+    }
+  }
+  return files;
+}
+
+// Generate thumbnail data URL from file using createImageBitmap for non-blocking decode
+async function generateThumbnail(file, size) {
+  const ext = file.name.split('.').pop().toLowerCase();
+
+  // Handle PPMX files specially - load via loadPpmx then scale
+  if (ext === 'ppmx') {
+    try {
+      const { img, width, height, url } = await loadPpmx(file);
+      const scale = Math.min(size / width, size / height);
+      const w = Math.round(width * scale);
+      const h = Math.round(height * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      return canvas.toDataURL('image/jpeg', 0.7);
+    } catch (err) {
+      console.warn('Failed to generate PPMX thumbnail:', err);
+      throw err;
+    }
+  }
+
+  try {
+    // createImageBitmap decodes off the main thread
+    const bitmap = await createImageBitmap(file);
+
+    // Calculate scaled size maintaining aspect ratio
+    const scale = Math.min(size / bitmap.width, size / bitmap.height);
+    const w = Math.round(bitmap.width * scale);
+    const h = Math.round(bitmap.height * scale);
+
+    // Use OffscreenCanvas if available for fully off-thread rendering
+    let canvas, ctx;
+    if (typeof OffscreenCanvas !== 'undefined') {
+      canvas = new OffscreenCanvas(w, h);
+      ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, w, h);
+      const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.7 });
+      bitmap.close();
+      return URL.createObjectURL(blob);
+    } else {
+      // Fallback for browsers without OffscreenCanvas
+      canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, w, h);
+      bitmap.close();
+      return canvas.toDataURL('image/jpeg', 0.7);
+    }
+  } catch (err) {
+    // Fallback to traditional method
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const scale = Math.min(size / img.width, size / img.height);
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        canvas.width = w;
+        canvas.height = h;
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        URL.revokeObjectURL(url);
+        resolve(dataUrl);
+      };
+
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Failed to load image for thumbnail'));
+      };
+
+      img.src = url;
+    });
+  }
+}
+
+// Preload a tuple's full images
+async function preloadTupleImages(tupleIdx) {
+  if (tupleIdx < 0 || tupleIdx >= tuples.length) return null;
+  if (preloadedTuples.has(tupleIdx)) return preloadedTuples.get(tupleIdx);
+
+  const tuple = tuples[tupleIdx];
+
+  try {
+    const loadedImages = await Promise.all(
+      tuple.imageData.map(async (data) => {
+        const loaded = await loadImage(data.file);
+        loaded.modality = data.modality;
+        return loaded;
+      })
+    );
+
+    preloadedTuples.set(tupleIdx, loadedImages);
+    return loadedImages;
+  } catch (err) {
+    console.warn(`Failed to preload tuple ${tupleIdx}:`, err);
+    return null;
+  }
+}
+
+// Preload tuples around current position
+function triggerPreload(centerIdx) {
+  // Preload ahead and behind
+  for (let offset = 1; offset <= PRELOAD_AHEAD; offset++) {
+    const ahead = centerIdx + offset;
+    const behind = centerIdx - offset;
+
+    if (ahead < tuples.length && !preloadedTuples.has(ahead)) {
+      preloadTupleImages(ahead);
+    }
+    if (behind >= 0 && !preloadedTuples.has(behind)) {
+      preloadTupleImages(behind);
+    }
+  }
+
+  // Clean up old preloaded tuples that are too far away
+  for (const [idx, imgs] of preloadedTuples.entries()) {
+    if (Math.abs(idx - centerIdx) > PRELOAD_AHEAD + 2) {
+      // Revoke URLs
+      imgs.forEach(img => { if (img.url) URL.revokeObjectURL(img.url); });
+      preloadedTuples.delete(idx);
+    }
+  }
+}
+
+async function loadTuple(index) {
+  if (index < 0 || index >= tuples.length) return;
+
+  // Preserve current modality index when switching tuples
+  const preservedModalityIndex = currentIndex;
+
+  currentTupleIndex = index;
+  const tuple = tuples[index];
+
+  try {
+    let loadedImages;
+
+    // Check if already preloaded
+    if (preloadedTuples.has(index)) {
+      loadedImages = preloadedTuples.get(index);
+    } else {
+      loadedImages = await Promise.all(
+        tuple.imageData.map(async (data) => {
+          const loaded = await loadImage(data.file);
+          loaded.modality = data.modality;
+          return loaded;
+        })
+      );
+      preloadedTuples.set(index, loadedImages);
+    }
+
+    // Check aspect ratios - all must match
+    const aspects = loadedImages.map(img => img.width / img.height);
+    const baseAspect = aspects[0];
+    const tolerance = 0.01;
+
+    const mismatch = aspects.find((a, i) =>
+      i > 0 && Math.abs(a - baseAspect) / Math.max(a, baseAspect) > tolerance
+    );
+
+    if (mismatch !== undefined) {
+      console.warn(`Aspect ratio mismatch in tuple ${index + 1}`);
+      const details = loadedImages.map(img =>
+        `${img.modality}: ${img.width}×${img.height}`
+      ).join(', ');
+      console.warn(details);
+    }
+
+    activateViewer(loadedImages, tuple.name, preservedModalityIndex);
+
+    // Trigger preloading of nearby tuples
+    triggerPreload(index);
+  } catch (err) {
+    alert('Error loading tuple: ' + err.message);
+  }
+}
+
+function handleFiles(files) {
+  const imageFiles = Array.from(files).filter(f => {
+    const ext = f.name.split('.').pop().toLowerCase();
+    return f.type.startsWith('image/') || IMAGE_EXTENSIONS.includes(ext);
+  });
+
+  if (imageFiles.length < 2) {
+    alert('Please drop at least 2 images to form a tuple');
+    return;
+  }
+
+  handleFilesAsTuple(imageFiles);
+}
+
+async function handleFilesAsTuple(imageFiles) {
+  // Sort files
+  imageFiles.sort((a, b) => naturalSort({ name: a.name }, { name: b.name }));
+
+  // Determine modalities from differing parts of filenames
+  const names = imageFiles.map(f => f.name);
+  modalities = findDifferingParts(names);
+  modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
+
+  // Ensure unique modality names
+  const seen = new Map();
+  modalities = modalities.map((m, i) => {
+    if (seen.has(m)) {
+      const count = seen.get(m) + 1;
+      seen.set(m, count);
+      return `${m} (${count})`;
+    }
+    seen.set(m, 1);
+    return m;
+  });
+
+  try {
+    const loadedImages = await Promise.all(
+      imageFiles.map(async (file, i) => {
+        const loaded = await loadImage(file);
+        loaded.modality = modalities[i];
+        return loaded;
+      })
+    );
+
+    // Check aspect ratios
+    checkAndLoadTuple(loadedImages);
+  } catch (err) {
+    alert('Error loading images: ' + err.message);
+  }
+}
+
+// Load a .ppmx file (custom float32 format) and convert to grayscale image
+async function loadPpmx(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+
+  // Find line breaks to parse header
+  let pos = 0;
+  const lines = [];
+  for (let i = 0; i < 3; i++) {
+    let lineEnd = pos;
+    while (lineEnd < bytes.length && bytes[lineEnd] !== 10) lineEnd++;
+    const line = new TextDecoder().decode(bytes.slice(pos, lineEnd));
+    lines.push(line.trim());
+    pos = lineEnd + 1;
+  }
+
+  const [header, dims, flags] = lines;
+
+  // Validate header
+  if (header !== 'P7') {
+    throw new Error(`Unexpected PPMX header: "${header}", expected "P7"`);
+  }
+
+  // Parse dimensions
+  const [w, h] = dims.split(/\s+/).map(Number);
+  if (!w || !h) {
+    throw new Error(`Invalid PPMX dimensions: "${dims}"`);
+  }
+
+  // Validate flags (currently only "00000000000" is known)
+  const KNOWN_FLAGS = new Set(['00000000000']);
+  if (!KNOWN_FLAGS.has(flags)) {
+    console.warn(`Unknown PPMX flags: "${flags}". Known flags: ${[...KNOWN_FLAGS].join(', ')}`);
+  }
+
+  // Read float32 data
+  const dataBuffer = buffer.slice(pos);
+  const floatData = new Float32Array(dataBuffer);
+
+  if (floatData.length !== w * h) {
+    throw new Error(`PPMX data size mismatch: expected ${w * h}, got ${floatData.length}`);
+  }
+
+  // Find min/max for normalization
+  let min = Infinity, max = -Infinity;
+  for (let i = 0; i < floatData.length; i++) {
+    const v = floatData[i];
+    if (isFinite(v)) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+
+  // Create grayscale image
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const imageData = ctx.createImageData(w, h);
+  const pixels = imageData.data;
+
+  const range = max - min || 1;
+  for (let i = 0; i < floatData.length; i++) {
+    const v = floatData[i];
+    const normalized = isFinite(v) ? (v - min) / range : 0;
+    const gray = Math.round(normalized * 255);
+    const pi = i * 4;
+    pixels[pi] = gray;     // R
+    pixels[pi + 1] = gray; // G
+    pixels[pi + 2] = gray; // B
+    pixels[pi + 3] = 255;  // A
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+
+  // Convert canvas to blob URL for consistent handling
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Failed to create blob from PPMX'));
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        resolve({ img, name: file.name, width: w, height: h, url });
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error(`Failed to load converted PPMX ${file.name}`));
+      };
+      img.src = url;
+    }, 'image/png');
+  });
+}
+
+function loadImage(file) {
+  return new Promise(async (resolve, reject) => {
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!file.type.startsWith('image/') && !IMAGE_EXTENSIONS.includes(ext)) {
+      reject(new Error(`${file.name} is not an image`));
+      return;
+    }
+
+    // Handle PPMX files specially
+    if (ext === 'ppmx') {
+      try {
+        const result = await loadPpmx(file);
+        resolve(result);
+      } catch (err) {
+        reject(err);
+      }
+      return;
+    }
+
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      resolve({ img, name: file.name, width: img.width, height: img.height, url });
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error(`Failed to load ${file.name}`));
+    };
+    img.src = url;
+  });
+}
+
+function checkAndLoadTuple(loadedImages) {
+  const aspects = loadedImages.map(img => img.width / img.height);
+  const baseAspect = aspects[0];
+  const tolerance = 0.01;
+
+  const mismatchIndex = aspects.findIndex((a, i) =>
+    i > 0 && Math.abs(a - baseAspect) / Math.max(a, baseAspect) > tolerance
+  );
+
+  if (mismatchIndex !== -1) {
+    pendingImages = loadedImages;
+    const details = loadedImages.map(img =>
+      `<strong>${img.modality}</strong>: ${img.width}×${img.height} (${(img.width/img.height).toFixed(4)})`
+    ).join('<br>');
+    errorText.innerHTML = details;
+    errorModal.classList.add('active');
+    return;
+  }
+
+  // Find common name for tuple
+  const tupleName = findCommonSubstring(loadedImages.map(img => img.name)) || 'Untitled';
+
+  isMultiTupleMode = false;
+  tuples = [{ name: tupleName, images: loadedImages }];
+  currentTupleIndex = 0;
+
+  activateViewer(loadedImages, tupleName);
+}
+
+function cancelLoad() {
+  errorModal.classList.remove('active');
+  pendingImages = null;
+}
+
+function continueLoad() {
+  errorModal.classList.remove('active');
+  if (pendingImages) {
+    const tupleName = findCommonSubstring(pendingImages.map(img => img.name)) || 'Untitled';
+    isMultiTupleMode = false;
+    tuples = [{ name: tupleName, images: pendingImages }];
+    currentTupleIndex = 0;
+    activateViewer(pendingImages, tupleName);
+    pendingImages = null;
+  }
+}
+
+function activateViewer(loadedImages, tupleName, preserveModalityIndex = -1) {
+  // Don't revoke URLs for preloaded images
+  // Only revoke if they're not in preloaded cache
+  for (const img of images) {
+    let isPreloaded = false;
+    for (const [_, preloaded] of preloadedTuples.entries()) {
+      if (preloaded.includes(img)) {
+        isPreloaded = true;
+        break;
+      }
+    }
+    if (!isPreloaded && img.url) {
+      URL.revokeObjectURL(img.url);
+    }
+  }
+
+  images = loadedImages;
+
+  // Preserve modality index if valid, otherwise reset to 0
+  if (preserveModalityIndex >= 0 && preserveModalityIndex < images.length) {
+    currentIndex = preserveModalityIndex;
+    previousIndex = preserveModalityIndex;
+  } else {
+    currentIndex = 0;
+    previousIndex = 0;
+  }
+
+  zoom = 1;
+  panX = panY = 0;
+  isReset = false;
+
+  dropzone.classList.add('hidden');
+  viewer.classList.add('active');
+  info.classList.remove('hidden');
+
+  // Build modality selector buttons
+  buildModalitySelector();
+
+  // Compute and set fixed height for info bar based on all filenames
+  computeInfoBarHeight(loadedImages, tupleName);
+
+  // Build or update carousel (only in multi-tuple/dir mode)
+  if (isMultiTupleMode && carousel.children.length === 0) {
+    buildCarousel();
+  } else {
+    updateCarouselSelection();
+  }
+
+  render();
+}
+
+// Compute the max height needed for the info bar across all modalities in the tuple
+function computeInfoBarHeight(loadedImages, tupleName) {
+  // Reset to auto height first so we can measure
+  info.style.height = 'auto';
+
+  let maxHeight = 0;
+  const originalText = status.textContent;
+
+  // Measure height for each filename
+  for (const img of loadedImages) {
+    let statusText = `${img.name} (${img.width}×${img.height}) | Zoom: 1.0×`;
+    if (isMultiTupleMode) {
+      statusText = `[${currentTupleIndex + 1}/${tuples.length}] ` + statusText;
+    }
+    status.textContent = statusText;
+
+    // Force layout recalculation
+    const height = info.offsetHeight;
+    if (height > maxHeight) {
+      maxHeight = height;
+    }
+  }
+
+  // Restore original text
+  status.textContent = originalText;
+
+  // Set fixed height
+  info.style.height = maxHeight + 'px';
+}
+
+// Recompute info bar height on window resize
+let resizeTimeout = null;
+window.addEventListener('resize', () => {
+  if (images.length === 0) return;
+
+  // Debounce resize events
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    const tupleName = isMultiTupleMode ? tuples[currentTupleIndex].name : '';
+    computeInfoBarHeight(images, tupleName);
+  }, 100);
+});
+
+function buildModalitySelector() {
+  modalitySelector.innerHTML = '';
+
+  // Build buttons directly from images array (index = display position)
+  images.forEach((img, idx) => {
+    const btn = document.createElement('button');
+    btn.className = 'modality-btn';
+    btn.textContent = `${idx + 1}: ${img.modality || idx + 1}`;
+    btn.style.background = modalityColors[idx];
+    btn.dataset.index = idx;
+
+    btn.addEventListener('click', () => {
+      if (currentIndex !== idx) {
+        previousIndex = currentIndex;
+        currentIndex = idx;
+        render();
+      }
+    });
+
+    modalitySelector.appendChild(btn);
+  });
+
+  updateModalitySelector();
+}
+
+// Move current modality left or right in the order
+function moveCurrentModality(direction) {
+  if (images.length < 2) return;
+
+  const currentPos = currentIndex;
+  const newPos = currentPos + direction;
+
+  // Check bounds
+  if (newPos < 0 || newPos >= images.length) return;
+
+  // Swap in images array
+  const tempImg = images[currentPos];
+  images[currentPos] = images[newPos];
+  images[newPos] = tempImg;
+
+  // Swap in modalityColors array
+  const tempColor = modalityColors[currentPos];
+  modalityColors[currentPos] = modalityColors[newPos];
+  modalityColors[newPos] = tempColor;
+
+  // Swap in modalities array
+  const tempMod = modalities[currentPos];
+  modalities[currentPos] = modalities[newPos];
+  modalities[newPos] = tempMod;
+
+  // Swap in all tuples' imageData (only if it exists - multi-tuple mode)
+  for (const tuple of tuples) {
+    if (tuple.imageData) {
+      const tempData = tuple.imageData[currentPos];
+      tuple.imageData[currentPos] = tuple.imageData[newPos];
+      tuple.imageData[newPos] = tempData;
+    }
+  }
+
+  // Update currentIndex to follow the moved modality
+  currentIndex = newPos;
+
+  // Clear preloaded tuples since order changed
+  for (const [_, imgs] of preloadedTuples.entries()) {
+    imgs.forEach(img => { if (img.url) URL.revokeObjectURL(img.url); });
+  }
+  preloadedTuples.clear();
+
+  // Rebuild UI
+  buildModalitySelector();
+  if (isMultiTupleMode) {
+    rebuildCarouselThumbnails();
+  }
+  render();
+}
+
+function updateModalitySelector() {
+  const buttons = modalitySelector.querySelectorAll('.modality-btn');
+  buttons.forEach((btn) => {
+    const idx = parseInt(btn.dataset.index);
+    if (idx === currentIndex) {
+      btn.classList.add('active');
+      btn.classList.remove('inactive');
+    } else {
+      btn.classList.remove('active');
+      btn.classList.add('inactive');
+    }
+  });
+
+  // Update reorder button states
+  reorderLeftBtn.disabled = currentIndex <= 0;
+  reorderRightBtn.disabled = currentIndex >= images.length - 1;
+}
+
+
+// Carousel functions
+async function buildCarousel() {
+  carousel.innerHTML = '';
+  carousel.style.width = CAROUSEL_WIDTH + 'px';
+
+  if (!isMultiTupleMode || tuples.length <= 1) {
+    carousel.classList.remove('active');
+    carouselResize.classList.remove('active');
+    return;
+  }
+
+  carousel.classList.add('active');
+  carouselResize.classList.add('active');
+  carouselResize.style.left = (CAROUSEL_WIDTH - 4) + 'px';
+
+  const totalThumbs = tuples.length * modalities.length;
+  let loadedThumbs = 0;
+
+  // Count how many are already cached
+  let cachedCount = 0;
+  for (const tuple of tuples) {
+    for (const imgData of tuple.imageData) {
+      if (thumbnailCache.has(imgData.file)) cachedCount++;
+    }
+  }
+
+  // Only show progress bar if we need to generate thumbnails
+  const needsGeneration = cachedCount < totalThumbs;
+  if (needsGeneration) {
+    progressContainer.classList.add('active');
+    progressText.textContent = 'Generating thumbnails...';
+    progressFill.style.width = '0%';
+  }
+
+  // Build all rows first (with placeholder thumbs)
+  const thumbElements = [];  // Array of {thumb, file, tupleIdx, modIdx}
+
+  for (let tupleIdx = 0; tupleIdx < tuples.length; tupleIdx++) {
+    const tuple = tuples[tupleIdx];
+    const row = document.createElement('div');
+    row.className = 'carousel-row';
+    row.dataset.tupleIndex = tupleIdx;
+
+    for (let modIdx = 0; modIdx < tuple.imageData.length; modIdx++) {
+      const imgData = tuple.imageData[modIdx];
+      const thumb = document.createElement('img');
+      thumb.className = 'carousel-thumb';
+      thumb.style.width = CAROUSEL_THUMB_SIZE + 'px';
+      thumb.style.height = CAROUSEL_THUMB_SIZE + 'px';
+      thumb.dataset.tupleIndex = tupleIdx;
+      thumb.dataset.modalityIndex = modIdx;
+
+      const file = imgData.file;
+
+      // If cached, set immediately
+      if (thumbnailCache.has(file)) {
+        thumb.src = thumbnailCache.get(file);
+        loadedThumbs++;
+      } else {
+        // Queue for sequential generation
+        thumbElements.push({ thumb, file, tupleIdx, modIdx });
+      }
+
+      // Click handler
+      thumb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const ti = parseInt(thumb.dataset.tupleIndex);
+        const mi = parseInt(thumb.dataset.modalityIndex);
+        goToTupleAndModality(ti, mi);
+      });
+
+      row.appendChild(thumb);
+    }
+
+    // Click on row
+    row.addEventListener('click', () => {
+      const ti = parseInt(row.dataset.tupleIndex);
+      if (ti !== currentTupleIndex) {
+        loadTuple(ti);
+      }
+    });
+
+    carousel.appendChild(row);
+  }
+
+  updateCarouselSelection();
+
+  // Generate uncached thumbnails sequentially (top to bottom)
+  // Yield after each thumbnail to keep UI responsive during zoom/pan
+  async function generateThumbnailsSequentially() {
+    for (const { thumb, file, tupleIdx, modIdx } of thumbElements) {
+      // Yield before each thumbnail to allow UI updates
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      try {
+        const dataUrl = await generateThumbnail(file, CAROUSEL_THUMB_SIZE * 2);
+        thumbnailCache.set(file, dataUrl);
+        thumb.src = dataUrl;
+        loadedThumbs++;
+
+        const progress = Math.round((loadedThumbs / totalThumbs) * 100);
+        progressFill.style.width = progress + '%';
+        progressText.textContent = `Generating thumbnails... ${loadedThumbs}/${totalThumbs}`;
+      } catch (err) {
+        console.warn(`Failed to generate thumbnail for tuple ${tupleIdx}, mod ${modIdx}:`, err);
+        loadedThumbs++;
+      }
+    }
+
+    // Done - hide progress bar
+    progressContainer.classList.remove('active');
+  }
+
+  if (thumbElements.length > 0) {
+    generateThumbnailsSequentially();
+  } else {
+    progressContainer.classList.remove('active');
+  }
+}
+
+function rebuildCarouselThumbnails() {
+  // Rebuild carousel after reordering
+  if (!isMultiTupleMode) return;
+  buildCarousel();
+}
+
+function updateCarouselSelection() {
+  if (!isMultiTupleMode) return;
+
+  const rows = carousel.querySelectorAll('.carousel-row');
+  rows.forEach((row, rowIdx) => {
+    if (rowIdx === currentTupleIndex) {
+      row.classList.add('current');
+    } else {
+      row.classList.remove('current');
+    }
+
+    const thumbs = row.querySelectorAll('.carousel-thumb');
+    thumbs.forEach((thumb, thumbIdx) => {
+      // Active means it's in the current tuple
+      if (rowIdx === currentTupleIndex) {
+        thumb.classList.add('active');
+      } else {
+        thumb.classList.remove('active');
+      }
+
+      // Selected means it's the current modality in current tuple
+      if (rowIdx === currentTupleIndex && thumbIdx === currentIndex) {
+        thumb.classList.add('selected');
+      } else {
+        thumb.classList.remove('selected');
+      }
+    });
+  });
+
+  scrollCarouselToCurrentTuple();
+}
+
+function scrollCarouselToCurrentTuple() {
+  if (!isMultiTupleMode) return;
+
+  const rows = carousel.querySelectorAll('.carousel-row');
+  if (rows.length === 0 || currentTupleIndex >= rows.length) return;
+
+  const currentRow = rows[currentTupleIndex];
+
+  // Calculate where the row should be (centered)
+  const carouselHeight = carousel.clientHeight;
+  const rowHeight = currentRow.offsetHeight;
+  const rowTop = currentRow.offsetTop;
+
+  const targetScroll = rowTop - (carouselHeight / 2) + (rowHeight / 2);
+
+  carousel.scrollTo({
+    top: Math.max(0, targetScroll),
+    behavior: 'smooth'
+  });
+}
+
+async function goToTupleAndModality(tupleIdx, modalityIdx) {
+  if (tupleIdx === currentTupleIndex) {
+    // Same tuple, just switch modality
+    if (modalityIdx !== currentIndex) {
+      previousIndex = currentIndex;
+      currentIndex = modalityIdx;
+      render();
+      updateCarouselSelection();
+    }
+  } else {
+    // Different tuple - load it with the specified modality
+    currentTupleIndex = tupleIdx;
+    const tuple = tuples[tupleIdx];
+
+    try {
+      let loadedImages;
+
+      // Check if already preloaded
+      if (preloadedTuples.has(tupleIdx)) {
+        loadedImages = preloadedTuples.get(tupleIdx);
+      } else {
+        loadedImages = await Promise.all(
+          tuple.imageData.map(async (data) => {
+            const loaded = await loadImage(data.file);
+            loaded.modality = data.modality;
+            return loaded;
+          })
+        );
+        preloadedTuples.set(tupleIdx, loadedImages);
+      }
+
+      // Check aspect ratios - all must match
+      const aspects = loadedImages.map(img => img.width / img.height);
+      const baseAspect = aspects[0];
+      const tolerance = 0.01;
+
+      const mismatch = aspects.find((a, i) =>
+        i > 0 && Math.abs(a - baseAspect) / Math.max(a, baseAspect) > tolerance
+      );
+
+      if (mismatch !== undefined) {
+        console.warn(`Aspect ratio mismatch in tuple ${tupleIdx + 1}`);
+      }
+
+      activateViewer(loadedImages, tuple.name, modalityIdx);
+
+      // Trigger preloading
+      triggerPreload(tupleIdx);
+    } catch (err) {
+      alert('Error loading tuple: ' + err.message);
+    }
+  }
+}
+
+function render() {
+  if (!images.length) return;
+
+  const { img, name, width, height, modality } = images[currentIndex];
+
+  // Update modality selector
+  updateModalitySelector();
+
+  // Update carousel selection
+  if (isMultiTupleMode) {
+    updateCarouselSelection();
+  }
+
+  // Update status text
+  let statusText = `${name} (${width}×${height}) | Zoom: ${zoom.toFixed(1)}×`;
+  if (isMultiTupleMode) {
+    const tupleName = tuples[currentTupleIndex].name;
+    statusText = `[${currentTupleIndex + 1}/${tuples.length}] ` + statusText;
+  }
+  status.textContent = statusText;
+
+  // Use requestAnimationFrame to ensure layout is updated before measuring
+  requestAnimationFrame(() => {
+    // Fit to viewer (account for carousel width)
+    const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+    const vw = viewer.clientWidth - carouselOffset;
+    const vh = viewer.clientHeight;
+    const baseScale = Math.min(vw / width, vh / height);
+    const scale = baseScale * zoom;
+
+    canvas.width = width;
+    canvas.height = height;
+    ctx.drawImage(img, 0, 0);
+
+    const displayW = width * scale;
+    const displayH = height * scale;
+
+    canvas.style.width = displayW + 'px';
+    canvas.style.height = displayH + 'px';
+
+    // Offset canvas center by half carousel width when carousel is visible
+    const centerOffsetX = carouselOffset / 2;
+    canvas.style.transform = `translate(calc(-50% + ${panX + centerOffsetX}px), calc(-50% + ${panY}px))`;
+
+    // Update thumbnail
+    renderThumbnail(img, width, height, vw, vh, baseScale);
+  });
+}
+
+function renderThumbnail(img, imgW, imgH, viewerW, viewerH, baseScale) {
+  // Only show thumbnail when zoomed in
+  if (zoom <= 1.05) {
+    thumbnail.classList.remove('active');
+    return;
+  }
+  thumbnail.classList.add('active');
+
+  // Calculate thumbnail size
+  const thumbScale = Math.min(THUMB_MAX_SIZE / imgW, THUMB_MAX_SIZE / imgH);
+  const thumbW = Math.round(imgW * thumbScale);
+  const thumbH = Math.round(imgH * thumbScale);
+
+  thumbCanvas.width = thumbW;
+  thumbCanvas.height = thumbH;
+  thumbCtx.drawImage(img, 0, 0, thumbW, thumbH);
+
+  // Calculate viewport rectangle
+  const scale = baseScale * zoom;
+  const visibleW = viewerW / scale;
+  const visibleH = viewerH / scale;
+
+  // Center of view in image coordinates (accounting for pan)
+  const centerX = imgW / 2 - panX / scale;
+  const centerY = imgH / 2 - panY / scale;
+
+  // Viewport bounds in image coordinates
+  const vpLeft = centerX - visibleW / 2;
+  const vpTop = centerY - visibleH / 2;
+
+  // Convert to thumbnail coordinates
+  const vpX = vpLeft * thumbScale;
+  const vpY = vpTop * thumbScale;
+  const vpW = visibleW * thumbScale;
+  const vpH = visibleH * thumbScale;
+
+  // Position the viewport indicator
+  thumbViewport.style.left = (4 + Math.max(0, vpX)) + 'px';
+  thumbViewport.style.top = (4 + Math.max(0, vpY)) + 'px';
+  thumbViewport.style.width = Math.min(vpW, thumbW - Math.max(0, vpX)) + 'px';
+  thumbViewport.style.height = Math.min(vpH, thumbH - Math.max(0, vpY)) + 'px';
+}
+
+// Keyboard controls
+document.addEventListener('keydown', (e) => {
+  // Close help modal on Escape
+  if (e.code === 'Escape' && helpModal.classList.contains('active')) {
+    closeHelpModal();
+    e.preventDefault();
+    return;
+  }
+
+  if (!images.length) return;
+
+  switch(e.code) {
+    case 'Space':
+      e.preventDefault();
+      if (!spaceDown) {
+        spaceDown = true;
+        // Flip to previous image
+        const temp = currentIndex;
+        currentIndex = previousIndex;
+        previousIndex = temp;
+        render();
+      }
+      break;
+    case 'ArrowRight':
+      e.preventDefault();
+      if (currentIndex < images.length - 1) {
+        previousIndex = currentIndex;
+        currentIndex++;
+        render();
+      }
+      break;
+    case 'ArrowLeft':
+      e.preventDefault();
+      if (currentIndex > 0) {
+        previousIndex = currentIndex;
+        currentIndex--;
+        render();
+      }
+      break;
+    case 'BracketLeft':
+      e.preventDefault();
+      moveCurrentModality(-1);
+      break;
+    case 'BracketRight':
+      e.preventDefault();
+      moveCurrentModality(1);
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      if (isMultiTupleMode && currentTupleIndex > 0) {
+        // Throttle when holding key down
+        const now = Date.now();
+        if (isLoadingTuple || (e.repeat && now - lastKeyNavTime < KEY_NAV_THROTTLE)) break;
+        lastKeyNavTime = now;
+        isLoadingTuple = true;
+        loadTuple(currentTupleIndex - 1).finally(() => { isLoadingTuple = false; });
+      }
+      break;
+    case 'ArrowDown':
+      e.preventDefault();
+      if (isMultiTupleMode && currentTupleIndex < tuples.length - 1) {
+        // Throttle when holding key down
+        const now2 = Date.now();
+        if (isLoadingTuple || (e.repeat && now2 - lastKeyNavTime < KEY_NAV_THROTTLE)) break;
+        lastKeyNavTime = now2;
+        isLoadingTuple = true;
+        loadTuple(currentTupleIndex + 1).finally(() => { isLoadingTuple = false; });
+      }
+      break;
+    case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4':
+    case 'Digit5': case 'Digit6': case 'Digit7': case 'Digit8': case 'Digit9':
+      e.preventDefault();
+      const idx = parseInt(e.code.replace('Digit', '')) - 1;
+      if (idx < images.length && idx !== currentIndex) {
+        previousIndex = currentIndex;
+        currentIndex = idx;
+        render();
+      }
+      break;
+    case 'KeyR':
+    case 'Escape':
+      if (e.code === 'Escape' && errorModal.classList.contains('active')) {
+        cancelLoad();
+        break;
+      }
+      // If already reset, go back to dropzone
+      if (isReset && zoom === 1 && panX === 0 && panY === 0) {
+        images.forEach(img => { if (img.url) URL.revokeObjectURL(img.url); });
+        images = [];
+        tuples = [];
+        modalities = [];
+        modalityColors = [];
+        isMultiTupleMode = false;
+        currentIndex = 0;
+        previousIndex = 0;
+        currentTupleIndex = 0;
+        isReset = false;
+        viewer.classList.remove('active');
+        dropzone.classList.remove('hidden');
+        info.classList.add('hidden');
+        thumbnail.classList.remove('active');
+        carousel.classList.remove('active');
+        carouselResize.classList.remove('active');
+        carousel.innerHTML = '';
+        progressContainer.classList.remove('active');
+        // thumbnailCache is a WeakMap - it auto-cleans when file references are gone
+        // Clear preloaded tuples
+        for (const [_, imgs] of preloadedTuples.entries()) {
+          imgs.forEach(img => { if (img.url) URL.revokeObjectURL(img.url); });
+        }
+        preloadedTuples.clear();
+        break;
+      }
+      zoom = 1;
+      panX = panY = 0;
+      isReset = true;
+      render();
+      break;
+  }
+});
+
+// Mouse wheel zoom - zoom towards mouse position
+viewer.addEventListener('wheel', (e) => {
+  // Check if over carousel
+  const carouselRect = carousel.getBoundingClientRect();
+  if (isMultiTupleMode && e.clientX >= carouselRect.left && e.clientX <= carouselRect.right &&
+      e.clientY >= carouselRect.top && e.clientY <= carouselRect.bottom) {
+    return;  // Let carousel handle it
+  }
+
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? 0.97 : 1.03;
+  const newZoom = Math.max(0.1, Math.min(50, zoom * delta));
+
+  // Get mouse position relative to viewer center (accounting for carousel)
+  const rect = viewer.getBoundingClientRect();
+  const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+  const mouseX = e.clientX - rect.left - carouselOffset - (rect.width - carouselOffset) / 2;
+  const mouseY = e.clientY - rect.top - rect.height / 2;
+
+  // Adjust pan so the point under the mouse stays fixed
+  const zoomRatio = newZoom / zoom;
+  panX = mouseX - (mouseX - panX) * zoomRatio;
+  panY = mouseY - (mouseY - panY) * zoomRatio;
+
+  zoom = newZoom;
+  isReset = false;
+  render();
+}, { passive: false });
+
+// Pan with mouse drag
+viewer.addEventListener('mousedown', (e) => {
+  // Don't start drag if clicking on carousel
+  if (e.target.closest('#carousel')) return;
+
+  isDragging = true;
+  dragStartX = e.clientX - panX;
+  dragStartY = e.clientY - panY;
+  viewer.classList.add('dragging');
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  panX = e.clientX - dragStartX;
+  panY = e.clientY - dragStartY;
+  isReset = false;
+  render();
+});
+
+document.addEventListener('mouseup', () => {
+  isDragging = false;
+  viewer.classList.remove('dragging');
+});
+
+// Space bar release - flip back
+document.addEventListener('keyup', (e) => {
+  if (e.code === 'Space') {
+    spaceDown = false;
+    if (images.length) {
+      // Flip back
+      const temp = currentIndex;
+      currentIndex = previousIndex;
+      previousIndex = temp;
+      render();
+    }
+  }
+});
+
+// Handle resize - re-render canvas immediately
+window.addEventListener('resize', () => {
+  if (images.length) render();
+});
+
+// Carousel mouse wheel scrolling
+carousel.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  carousel.scrollTop += e.deltaY;
+}, { passive: false });
+
+// Carousel resize handle
+let isResizingCarousel = false;
+let resizeStartX = 0;
+let resizeStartWidth = 0;
+let resizeCenterRowFraction = 0;  // Where in the row (0-1) is the viewport center?
+
+carouselResize.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  isResizingCarousel = true;
+  resizeStartX = e.clientX;
+  resizeStartWidth = CAROUSEL_WIDTH;
+  carouselResize.classList.add('dragging');
+  carousel.classList.add('resizing');
+  document.body.style.cursor = 'ew-resize';
+
+  // Capture where the viewport center is relative to the current row
+  const rows = carousel.querySelectorAll('.carousel-row');
+  const currentRow = rows[currentTupleIndex];
+  if (currentRow && currentRow.offsetHeight > 0) {
+    const viewportCenter = carousel.scrollTop + carousel.clientHeight / 2;
+    const rowTop = currentRow.offsetTop;
+    // How far into the row is the viewport center? (as fraction of row height)
+    resizeCenterRowFraction = (viewportCenter - rowTop) / currentRow.offsetHeight;
+  }
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!isResizingCarousel) return;
+
+  const delta = e.clientX - resizeStartX;
+  const newWidth = Math.max(100, Math.min(500, resizeStartWidth + delta));
+  CAROUSEL_WIDTH = newWidth;
+  carousel.style.width = CAROUSEL_WIDTH + 'px';
+  carouselResize.style.left = (CAROUSEL_WIDTH - 4) + 'px';
+
+  // Recalculate thumbnail size
+  updateCarouselThumbSize();
+
+  // Update thumbnail sizes in DOM
+  const thumbs = carousel.querySelectorAll('.carousel-thumb');
+  thumbs.forEach(thumb => {
+    thumb.style.width = CAROUSEL_THUMB_SIZE + 'px';
+    thumb.style.height = CAROUSEL_THUMB_SIZE + 'px';
+  });
+
+  // Restore scroll so the viewport center stays at the same position in the current row
+  const rows = carousel.querySelectorAll('.carousel-row');
+  const currentRow = rows[currentTupleIndex];
+  if (currentRow) {
+    const rowTop = currentRow.offsetTop;
+    // The viewport center should be at rowTop + fraction * rowHeight
+    const targetViewportCenter = rowTop + resizeCenterRowFraction * currentRow.offsetHeight;
+    const newScrollTop = targetViewportCenter - carousel.clientHeight / 2;
+    // Clamp to valid range
+    const maxScroll = Math.max(0, carousel.scrollHeight - carousel.clientHeight);
+    carousel.scrollTop = Math.max(0, Math.min(maxScroll, newScrollTop));
+  }
+
+  render();
+});
+
+document.addEventListener('mouseup', () => {
+  if (isResizingCarousel) {
+    isResizingCarousel = false;
+    carouselResize.classList.remove('dragging');
+    carousel.classList.remove('resizing');
+    document.body.style.cursor = '';
+  }
+});
+</script>
+</body>
+</html>
