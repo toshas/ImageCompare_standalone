@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Image Compare</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -102,9 +103,21 @@ body {
   color: #888;
   flex: 1;
   min-width: 0;
-  text-align: center;
-  word-break: break-all;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
   line-height: 1.2;
+}
+#status-name {
+  flex: 1;
+  text-align: left;
+  word-break: break-all;
+}
+#status-info {
+  flex-shrink: 0;
+  text-align: right;
+  white-space: nowrap;
 }
 .modality-btn {
   display: inline-flex;
@@ -130,6 +143,13 @@ body {
 }
 .modality-btn.inactive {
   opacity: 0.4;
+}
+.modality-btn.unavailable {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+.modality-btn.unavailable.active {
+  opacity: 0.7;
 }
 #help-btn {
   background: #444;
@@ -309,6 +329,29 @@ body {
 .carousel-thumb.selected {
   border-color: #f0f;
 }
+.carousel-thumb.placeholder {
+  background: #1a1a1a;
+  opacity: 0.5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: 2px solid #333;
+}
+.carousel-thumb.placeholder:hover {
+  opacity: 0.7;
+  border-color: #555;
+}
+.carousel-thumb.placeholder.selected {
+  border-color: #f0f;
+  opacity: 0.8;
+}
+.carousel-thumb.placeholder::after {
+  content: '✕';
+  color: #555;
+  font-size: 18px;
+  font-weight: bold;
+}
 
 /* Carousel resize handle */
 #carousel-resize {
@@ -366,7 +409,7 @@ body {
 
 <div id="dropzone">
   <div class="drop-text">
-    <h2>Drop 2+ Images or a Folder</h2>
+    <h2>Drop 2+ Images or a Folder <span id="dropzone-version" style="font-size: 12px; color: #666; font-weight: normal;"></span></h2>
     <p>Drop multiple images to form a tuple, or a folder with subdirectories as modalities</p>
     <p style="margin-top: 12px;">
       <button id="select-folder-btn" class="btn btn-primary">Select Folder</button>
@@ -398,13 +441,13 @@ body {
     <button id="reorder-right" class="reorder-btn" title="Move modality right (])">→</button>
   </div>
   <div id="modality-selector"></div>
-  <span id="status">Loading...</span>
+  <span id="status"><span id="status-name">Loading...</span><span id="status-info"></span></span>
   <button id="help-btn" title="Keyboard shortcuts">?</button>
 </div>
 
 <div id="help-modal">
   <div class="modal-content">
-    <h3>Keyboard Shortcuts</h3>
+    <h3>Keyboard Shortcuts <span id="help-version" style="font-size: 12px; color: #666; font-weight: normal;"></span></h3>
     <table>
       <tr><td>← →</td><td>Switch modality</td></tr>
       <tr><td>↑ ↓</td><td>Previous/next tuple</td></tr>
@@ -436,12 +479,21 @@ body {
 <input type="file" id="folder-input" webkitdirectory style="display:none">
 
 <script>
+// Version
+const VERSION = 'v0.1.0';
+
+// Set version in UI
+document.getElementById('help-version').textContent = VERSION;
+document.getElementById('dropzone-version').textContent = VERSION;
+
 const dropzone = document.getElementById('dropzone');
 const viewer = document.getElementById('viewer');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const info = document.getElementById('info');
 const status = document.getElementById('status');
+const statusName = document.getElementById('status-name');
+const statusInfo = document.getElementById('status-info');
 const modalitySelector = document.getElementById('modality-selector');
 const errorModal = document.getElementById('error-modal');
 const errorText = document.getElementById('error-text');
@@ -475,10 +527,11 @@ const MODALITY_COLORS = [
   '#44f',    // blue
 ];
 
-// Current tuple's images (array of {img, name, width, height, url, modality})
-let images = [];
-let currentIndex = 0;
-let previousIndex = 0;  // For spacebar flip behavior
+// Current tuple's images - array indexed by modality position
+// May contain undefined for missing modalities
+let images = [];  // images[modalityIndex] = {img, name, width, height, url, modality} or undefined
+let currentModalityIndex = 0;  // Index into modalities array (display position)
+let previousModalityIndex = 0;  // For spacebar flip behavior
 let zoom = 1;
 let panX = 0, panY = 0;
 let isDragging = false;
@@ -727,49 +780,67 @@ async function processSubdirectoriesAsModalities(filesByDir) {
   modalities = Array.from(filesByDir.keys()).sort();
   modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
 
-  // Get files for each modality, sorted
-  const modalityFiles = modalities.map(mod => {
-    const files = filesByDir.get(mod);
-    return files.sort((a, b) => naturalSort({ name: a.name }, { name: b.name }));
-  });
+  // Build a map of matching key -> modality -> file
+  const filesByKey = new Map();
 
-  // Find minimum file count
-  const minCount = Math.min(...modalityFiles.map(f => f.length));
+  for (const modality of modalities) {
+    const files = filesByDir.get(modality);
+    for (const file of files) {
+      const key = extractMatchingKey(file.name);
 
-  if (minCount === 0) {
-    alert('One or more modalities have no images');
+      if (!filesByKey.has(key)) {
+        filesByKey.set(key, new Map());
+      }
+      // If multiple files from same modality have same key, keep the first one
+      if (!filesByKey.get(key).has(modality)) {
+        filesByKey.get(key).set(modality, file);
+      }
+    }
+  }
+
+  if (filesByKey.size === 0) {
+    alert('No images found in modalities');
     return;
   }
 
-  // Warn if counts differ
-  const counts = modalityFiles.map(f => f.length);
-  if (Math.max(...counts) !== Math.min(...counts)) {
-    const countStr = modalities.map((m, i) => `${m}: ${counts[i]}`).join(', ');
-    alert(`Warning: Modalities have different image counts (${countStr}). Using ${minCount} tuples.`);
-  }
+  // Sort keys naturally
+  const sortedKeys = Array.from(filesByKey.keys()).sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+  );
 
-  // Create tuples
+  // Build tuples from matched files
   tuples = [];
-  for (let i = 0; i < minCount; i++) {
+  for (const key of sortedKeys) {
+    const filesForTuple = filesByKey.get(key);
     const tupleImages = [];
     const names = [];
 
-    for (let m = 0; m < modalities.length; m++) {
-      const file = modalityFiles[m][i];
-      tupleImages.push({
-        file,
-        modality: modalities[m]
-      });
-      names.push(file.name);
+    // Add files in modality order
+    for (const modality of modalities) {
+      const file = filesForTuple.get(modality);
+      if (file) {
+        tupleImages.push({
+          file,
+          modality
+        });
+        names.push(file.name);
+      }
     }
 
-    // Tuple name is what the filenames share
-    const tupleName = findCommonSubstring(names) || `Tuple ${i + 1}`;
+    // Only create tuple if at least one image exists
+    if (tupleImages.length > 0) {
+      const tupleName = findCommonSubstring(names) || key;
+      tuples.push({
+        name: tupleName,
+        imageData: tupleImages
+      });
+    }
+  }
 
-    tuples.push({
-      name: tupleName,
-      imageData: tupleImages
-    });
+  // Log info about partial tuples
+  const partialCount = tuples.filter(t => t.imageData.length < modalities.length).length;
+  if (partialCount > 0) {
+    console.log(`${partialCount} tuples are missing some modalities`);
   }
 
   isMultiTupleMode = tuples.length > 1;
@@ -786,49 +857,67 @@ async function processSubdirectoriesAsModalitiesLegacy(filesByDir) {
   modalities = Array.from(filesByDir.keys()).sort();
   modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
 
-  // Get files for each modality, sorted
-  const modalityFiles = modalities.map(mod => {
-    const files = filesByDir.get(mod);
-    return files.sort(naturalSort);
-  });
+  // Build a map of matching key -> modality -> file
+  const filesByKey = new Map();
 
-  // Find minimum file count
-  const minCount = Math.min(...modalityFiles.map(f => f.length));
+  for (const modality of modalities) {
+    const files = filesByDir.get(modality);
+    for (const fileData of files) {
+      const key = extractMatchingKey(fileData.name);
 
-  if (minCount === 0) {
-    alert('One or more modalities have no images');
+      if (!filesByKey.has(key)) {
+        filesByKey.set(key, new Map());
+      }
+      // If multiple files from same modality have same key, keep the first one
+      if (!filesByKey.get(key).has(modality)) {
+        filesByKey.get(key).set(modality, fileData);
+      }
+    }
+  }
+
+  if (filesByKey.size === 0) {
+    alert('No images found in modalities');
     return;
   }
 
-  // Warn if counts differ
-  const counts = modalityFiles.map(f => f.length);
-  if (Math.max(...counts) !== Math.min(...counts)) {
-    const countStr = modalities.map((m, i) => `${m}: ${counts[i]}`).join(', ');
-    alert(`Warning: Modalities have different image counts (${countStr}). Using ${minCount} tuples.`);
-  }
+  // Sort keys naturally
+  const sortedKeys = Array.from(filesByKey.keys()).sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+  );
 
-  // Create tuples
+  // Build tuples from matched files
   tuples = [];
-  for (let i = 0; i < minCount; i++) {
+  for (const key of sortedKeys) {
+    const filesForTuple = filesByKey.get(key);
     const tupleImages = [];
     const names = [];
 
-    for (let m = 0; m < modalities.length; m++) {
-      const fileData = modalityFiles[m][i];
-      tupleImages.push({
-        file: fileData.file,
-        modality: modalities[m]
-      });
-      names.push(fileData.name);
+    // Add files in modality order
+    for (const modality of modalities) {
+      const fileData = filesForTuple.get(modality);
+      if (fileData) {
+        tupleImages.push({
+          file: fileData.file,
+          modality
+        });
+        names.push(fileData.name);
+      }
     }
 
-    // Tuple name is what the filenames share
-    const tupleName = findCommonSubstring(names) || `Tuple ${i + 1}`;
+    // Only create tuple if at least one image exists
+    if (tupleImages.length > 0) {
+      const tupleName = findCommonSubstring(names) || key;
+      tuples.push({
+        name: tupleName,
+        imageData: tupleImages
+      });
+    }
+  }
 
-    tuples.push({
-      name: tupleName,
-      imageData: tupleImages
-    });
+  // Log info about partial tuples
+  const partialCount = tuples.filter(t => t.imageData.length < modalities.length).length;
+  if (partialCount > 0) {
+    console.log(`${partialCount} tuples are missing some modalities`);
   }
 
   isMultiTupleMode = tuples.length > 1;
@@ -844,49 +933,67 @@ async function processSubdirectoriesAsModalitiesModern(filesByDir) {
   modalities = Array.from(filesByDir.keys()).sort();
   modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
 
-  // Get files for each modality, sorted
-  const modalityFiles = modalities.map(mod => {
-    const files = filesByDir.get(mod);
-    return files.sort(naturalSort);
-  });
+  // Build a map of matching key -> modality -> file
+  const filesByKey = new Map();
 
-  // Find minimum file count
-  const minCount = Math.min(...modalityFiles.map(f => f.length));
+  for (const modality of modalities) {
+    const files = filesByDir.get(modality);
+    for (const fileData of files) {
+      const key = extractMatchingKey(fileData.name);
 
-  if (minCount === 0) {
-    alert('One or more modalities have no images');
+      if (!filesByKey.has(key)) {
+        filesByKey.set(key, new Map());
+      }
+      // If multiple files from same modality have same key, keep the first one
+      if (!filesByKey.get(key).has(modality)) {
+        filesByKey.get(key).set(modality, fileData);
+      }
+    }
+  }
+
+  if (filesByKey.size === 0) {
+    alert('No images found in modalities');
     return;
   }
 
-  // Warn if counts differ
-  const counts = modalityFiles.map(f => f.length);
-  if (Math.max(...counts) !== Math.min(...counts)) {
-    const countStr = modalities.map((m, i) => `${m}: ${counts[i]}`).join(', ');
-    alert(`Warning: Modalities have different image counts (${countStr}). Using ${minCount} tuples.`);
-  }
+  // Sort keys naturally
+  const sortedKeys = Array.from(filesByKey.keys()).sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+  );
 
-  // Create tuples
+  // Build tuples from matched files
   tuples = [];
-  for (let i = 0; i < minCount; i++) {
+  for (const key of sortedKeys) {
+    const filesForTuple = filesByKey.get(key);
     const tupleImages = [];
     const names = [];
 
-    for (let m = 0; m < modalities.length; m++) {
-      const fileData = modalityFiles[m][i];
-      tupleImages.push({
-        file: fileData.file,
-        modality: modalities[m]
-      });
-      names.push(fileData.name);
+    // Add files in modality order
+    for (const modality of modalities) {
+      const fileData = filesForTuple.get(modality);
+      if (fileData) {
+        tupleImages.push({
+          file: fileData.file,
+          modality
+        });
+        names.push(fileData.name);
+      }
     }
 
-    // Tuple name is what the filenames share
-    const tupleName = findCommonSubstring(names) || `Tuple ${i + 1}`;
+    // Only create tuple if at least one image exists
+    if (tupleImages.length > 0) {
+      const tupleName = findCommonSubstring(names) || key;
+      tuples.push({
+        name: tupleName,
+        imageData: tupleImages
+      });
+    }
+  }
 
-    tuples.push({
-      name: tupleName,
-      imageData: tupleImages
-    });
+  // Log info about partial tuples
+  const partialCount = tuples.filter(t => t.imageData.length < modalities.length).length;
+  if (partialCount > 0) {
+    console.log(`${partialCount} tuples are missing some modalities`);
   }
 
   isMultiTupleMode = tuples.length > 1;
@@ -1060,6 +1167,39 @@ function naturalSort(a, b) {
   return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 }
 
+// Extract a matching key from filename (leading identifier before varying suffixes)
+// e.g., "202505210021_LMU_..." -> "202505210021"
+// e.g., "20251023_#WH768x1024.ppmx" -> "20251023"
+// e.g., "250928_01_#WH768x1024.ppmx" -> "250928_01"
+function extractMatchingKey(filename) {
+  // Remove extension
+  const baseName = filename.replace(/\.[^.]+$/, '');
+
+  // Try to extract leading numeric identifier
+  // Match: any sequence of digits, optionally followed by underscore and more digits
+  // Examples: "202505210021", "20251023", "250928_01"
+  const numericMatch = baseName.match(/^(\d+(?:_\d+)*)/);
+  if (numericMatch) {
+    return numericMatch[1];
+  }
+
+  // Try to extract alphanumeric identifier with optional sequence numbers
+  // Pattern: letters + optional digits + optional (_digits) groups
+  // Examples: "test1", "image_001", "sample_42", "test"
+  const alphaNumMatch = baseName.match(/^([a-zA-Z]+\d*(?:_\d+)*)/);
+  if (alphaNumMatch) {
+    return alphaNumMatch[1];
+  }
+
+  // Fallback: use everything up to first underscore or special character
+  const prefixMatch = baseName.match(/^([^_#]+)/);
+  if (prefixMatch) {
+    return prefixMatch[1];
+  }
+
+  return baseName;
+}
+
 async function readDirectoryModern(dirHandle) {
   const files = [];
   for await (const entry of dirHandle.values()) {
@@ -1161,7 +1301,7 @@ async function generateThumbnail(file, size) {
   }
 }
 
-// Preload a tuple's full images
+// Preload a tuple's full images (indexed by modality position)
 async function preloadTupleImages(tupleIdx) {
   if (tupleIdx < 0 || tupleIdx >= tuples.length) return null;
   if (preloadedTuples.has(tupleIdx)) return preloadedTuples.get(tupleIdx);
@@ -1169,10 +1309,21 @@ async function preloadTupleImages(tupleIdx) {
   const tuple = tuples[tupleIdx];
 
   try {
+    // Build a map of modality -> imageData for this tuple
+    const imageDataByModality = new Map();
+    for (const imgData of tuple.imageData) {
+      imageDataByModality.set(imgData.modality, imgData);
+    }
+
+    // Load images indexed by modality position (undefined for missing)
     const loadedImages = await Promise.all(
-      tuple.imageData.map(async (data) => {
-        const loaded = await loadImage(data.file);
-        loaded.modality = data.modality;
+      modalities.map(async (modalityName) => {
+        const imgData = imageDataByModality.get(modalityName);
+        if (!imgData) {
+          return undefined;  // Missing modality
+        }
+        const loaded = await loadImage(imgData.file);
+        loaded.modality = modalityName;
         return loaded;
       })
     );
@@ -1203,8 +1354,10 @@ function triggerPreload(centerIdx) {
   // Clean up old preloaded tuples that are too far away
   for (const [idx, imgs] of preloadedTuples.entries()) {
     if (Math.abs(idx - centerIdx) > PRELOAD_AHEAD + 2) {
-      // Revoke URLs
-      imgs.forEach(img => { if (img.url) URL.revokeObjectURL(img.url); });
+      // Revoke URLs (skip undefined entries)
+      if (imgs) {
+        imgs.forEach(img => { if (img && img.url) URL.revokeObjectURL(img.url); });
+      }
       preloadedTuples.delete(idx);
     }
   }
@@ -1214,43 +1367,50 @@ async function loadTuple(index) {
   if (index < 0 || index >= tuples.length) return;
 
   // Preserve current modality index when switching tuples
-  const preservedModalityIndex = currentIndex;
+  const preservedModalityIndex = currentModalityIndex;
 
   currentTupleIndex = index;
   const tuple = tuples[index];
 
   try {
-    let loadedImages;
-
-    // Check if already preloaded
-    if (preloadedTuples.has(index)) {
-      loadedImages = preloadedTuples.get(index);
-    } else {
-      loadedImages = await Promise.all(
-        tuple.imageData.map(async (data) => {
-          const loaded = await loadImage(data.file);
-          loaded.modality = data.modality;
-          return loaded;
-        })
-      );
-      preloadedTuples.set(index, loadedImages);
+    // Build a map of modality -> imageData for this tuple
+    const imageDataByModality = new Map();
+    for (const imgData of tuple.imageData) {
+      imageDataByModality.set(imgData.modality, imgData);
     }
 
-    // Check aspect ratios - all must match
-    const aspects = loadedImages.map(img => img.width / img.height);
-    const baseAspect = aspects[0];
-    const tolerance = 0.01;
-
-    const mismatch = aspects.find((a, i) =>
-      i > 0 && Math.abs(a - baseAspect) / Math.max(a, baseAspect) > tolerance
+    // Load images into an array indexed by modality position
+    // Missing modalities will be undefined
+    const loadedImages = await Promise.all(
+      modalities.map(async (modalityName) => {
+        const imgData = imageDataByModality.get(modalityName);
+        if (!imgData) {
+          return undefined;  // Missing modality
+        }
+        const loaded = await loadImage(imgData.file);
+        loaded.modality = modalityName;
+        return loaded;
+      })
     );
 
-    if (mismatch !== undefined) {
-      console.warn(`Aspect ratio mismatch in tuple ${index + 1}`);
-      const details = loadedImages.map(img =>
-        `${img.modality}: ${img.width}×${img.height}`
-      ).join(', ');
-      console.warn(details);
+    // Check aspect ratios for available images
+    const availableImages = loadedImages.filter(img => img !== undefined);
+    if (availableImages.length > 0) {
+      const aspects = availableImages.map(img => img.width / img.height);
+      const baseAspect = aspects[0];
+      const tolerance = 0.01;
+
+      const mismatch = aspects.find((a, i) =>
+        i > 0 && Math.abs(a - baseAspect) / Math.max(a, baseAspect) > tolerance
+      );
+
+      if (mismatch !== undefined) {
+        console.warn(`Aspect ratio mismatch in tuple ${index + 1}`);
+        const details = availableImages.map(img =>
+          `${img.modality}: ${img.width}×${img.height}`
+        ).join(', ');
+        console.warn(details);
+      }
     }
 
     activateViewer(loadedImages, tuple.name, preservedModalityIndex);
@@ -1491,9 +1651,10 @@ function activateViewer(loadedImages, tupleName, preserveModalityIndex = -1) {
   // Don't revoke URLs for preloaded images
   // Only revoke if they're not in preloaded cache
   for (const img of images) {
+    if (!img) continue;
     let isPreloaded = false;
     for (const [_, preloaded] of preloadedTuples.entries()) {
-      if (preloaded.includes(img)) {
+      if (preloaded && preloaded.includes(img)) {
         isPreloaded = true;
         break;
       }
@@ -1505,13 +1666,15 @@ function activateViewer(loadedImages, tupleName, preserveModalityIndex = -1) {
 
   images = loadedImages;
 
-  // Preserve modality index if valid, otherwise reset to 0
-  if (preserveModalityIndex >= 0 && preserveModalityIndex < images.length) {
-    currentIndex = preserveModalityIndex;
-    previousIndex = preserveModalityIndex;
+  // Preserve modality index if valid, otherwise find first available
+  if (preserveModalityIndex >= 0 && preserveModalityIndex < modalities.length) {
+    currentModalityIndex = preserveModalityIndex;
+    previousModalityIndex = preserveModalityIndex;
   } else {
-    currentIndex = 0;
-    previousIndex = 0;
+    // Find first available modality
+    const firstAvailable = images.findIndex(img => img !== undefined);
+    currentModalityIndex = firstAvailable >= 0 ? firstAvailable : 0;
+    previousModalityIndex = currentModalityIndex;
   }
 
   zoom = 1;
@@ -1544,15 +1707,18 @@ function computeInfoBarHeight(loadedImages, tupleName) {
   info.style.height = 'auto';
 
   let maxHeight = 0;
-  const originalText = status.textContent;
+  const originalNameText = statusName.textContent;
+  const originalInfoText = statusInfo.textContent;
 
-  // Measure height for each filename
+  // Measure height for each filename (skip undefined/missing)
   for (const img of loadedImages) {
-    let statusText = `${img.name} (${img.width}×${img.height}) | Zoom: 1.0×`;
+    if (!img) continue;  // Skip missing modalities
+    let nameText = `${img.name} (${img.width}×${img.height})`;
     if (isMultiTupleMode) {
-      statusText = `[${currentTupleIndex + 1}/${tuples.length}] ` + statusText;
+      nameText = `[${currentTupleIndex + 1}/${tuples.length}] ` + nameText;
     }
-    status.textContent = statusText;
+    statusName.textContent = nameText;
+    statusInfo.textContent = 'Zoom: 1.0×';
 
     // Force layout recalculation
     const height = info.offsetHeight;
@@ -1561,8 +1727,21 @@ function computeInfoBarHeight(loadedImages, tupleName) {
     }
   }
 
+  // Also measure "not available" text
+  let notAvailText = `Modality: not available`;
+  if (isMultiTupleMode) {
+    notAvailText = `[${currentTupleIndex + 1}/${tuples.length}] ` + notAvailText;
+  }
+  statusName.textContent = notAvailText;
+  statusInfo.textContent = 'Zoom: 1.0×';
+  const notAvailHeight = info.offsetHeight;
+  if (notAvailHeight > maxHeight) {
+    maxHeight = notAvailHeight;
+  }
+
   // Restore original text
-  status.textContent = originalText;
+  statusName.textContent = originalNameText;
+  statusInfo.textContent = originalInfoText;
 
   // Set fixed height
   info.style.height = maxHeight + 'px';
@@ -1571,7 +1750,7 @@ function computeInfoBarHeight(loadedImages, tupleName) {
 // Recompute info bar height on window resize
 let resizeTimeout = null;
 window.addEventListener('resize', () => {
-  if (images.length === 0) return;
+  if (modalities.length === 0) return;
 
   // Debounce resize events
   clearTimeout(resizeTimeout);
@@ -1584,18 +1763,24 @@ window.addEventListener('resize', () => {
 function buildModalitySelector() {
   modalitySelector.innerHTML = '';
 
-  // Build buttons directly from images array (index = display position)
-  images.forEach((img, idx) => {
+  // Build buttons for all modalities (index = display position)
+  modalities.forEach((modalityName, idx) => {
     const btn = document.createElement('button');
     btn.className = 'modality-btn';
-    btn.textContent = `${idx + 1}: ${img.modality || idx + 1}`;
+    btn.textContent = `${idx + 1}: ${modalityName}`;
     btn.style.background = modalityColors[idx];
     btn.dataset.index = idx;
 
+    // Mark as unavailable if missing
+    const hasImage = images[idx] !== undefined;
+    if (!hasImage) {
+      btn.classList.add('unavailable');
+    }
+
     btn.addEventListener('click', () => {
-      if (currentIndex !== idx) {
-        previousIndex = currentIndex;
-        currentIndex = idx;
+      if (currentModalityIndex !== idx) {
+        previousModalityIndex = currentModalityIndex;
+        currentModalityIndex = idx;
         render();
       }
     });
@@ -1608,13 +1793,13 @@ function buildModalitySelector() {
 
 // Move current modality left or right in the order
 function moveCurrentModality(direction) {
-  if (images.length < 2) return;
+  if (modalities.length < 2) return;
 
-  const currentPos = currentIndex;
+  const currentPos = currentModalityIndex;
   const newPos = currentPos + direction;
 
   // Check bounds
-  if (newPos < 0 || newPos >= images.length) return;
+  if (newPos < 0 || newPos >= modalities.length) return;
 
   // Swap in images array
   const tempImg = images[currentPos];
@@ -1631,21 +1816,16 @@ function moveCurrentModality(direction) {
   modalities[currentPos] = modalities[newPos];
   modalities[newPos] = tempMod;
 
-  // Swap in all tuples' imageData (only if it exists - multi-tuple mode)
-  for (const tuple of tuples) {
-    if (tuple.imageData) {
-      const tempData = tuple.imageData[currentPos];
-      tuple.imageData[currentPos] = tuple.imageData[newPos];
-      tuple.imageData[newPos] = tempData;
-    }
-  }
+  // Note: We do NOT swap in tuple.imageData because it's a sparse array
+  // with objects that have their own 'modality' field. The carousel and
+  // loading code look up images by modality name, not by array index.
 
-  // Update currentIndex to follow the moved modality
-  currentIndex = newPos;
+  // Update currentModalityIndex to follow the moved modality
+  currentModalityIndex = newPos;
 
   // Clear preloaded tuples since order changed
   for (const [_, imgs] of preloadedTuples.entries()) {
-    imgs.forEach(img => { if (img.url) URL.revokeObjectURL(img.url); });
+    if (imgs) imgs.forEach(img => { if (img && img.url) URL.revokeObjectURL(img.url); });
   }
   preloadedTuples.clear();
 
@@ -1661,7 +1841,7 @@ function updateModalitySelector() {
   const buttons = modalitySelector.querySelectorAll('.modality-btn');
   buttons.forEach((btn) => {
     const idx = parseInt(btn.dataset.index);
-    if (idx === currentIndex) {
+    if (idx === currentModalityIndex) {
       btn.classList.add('active');
       btn.classList.remove('inactive');
     } else {
@@ -1671,8 +1851,8 @@ function updateModalitySelector() {
   });
 
   // Update reorder button states
-  reorderLeftBtn.disabled = currentIndex <= 0;
-  reorderRightBtn.disabled = currentIndex >= images.length - 1;
+  reorderLeftBtn.disabled = currentModalityIndex <= 0;
+  reorderRightBtn.disabled = currentModalityIndex >= modalities.length - 1;
 }
 
 
@@ -1691,7 +1871,11 @@ async function buildCarousel() {
   carouselResize.classList.add('active');
   carouselResize.style.left = (CAROUSEL_WIDTH - 4) + 'px';
 
-  const totalThumbs = tuples.length * modalities.length;
+  // Count total actual images (not placeholders)
+  let totalThumbs = 0;
+  for (const tuple of tuples) {
+    totalThumbs += tuple.imageData.length;
+  }
   let loadedThumbs = 0;
 
   // Count how many are already cached
@@ -1710,8 +1894,13 @@ async function buildCarousel() {
     progressFill.style.width = '0%';
   }
 
-  // Build all rows first (with placeholder thumbs)
+  // Build all rows first (with placeholder thumbs for missing modalities)
   const thumbElements = [];  // Array of {thumb, file, tupleIdx, modIdx}
+
+  // Helper to find image data for a specific modality in a tuple
+  function findImageForModality(tuple, modalityName) {
+    return tuple.imageData.find(img => img.modality === modalityName);
+  }
 
   for (let tupleIdx = 0; tupleIdx < tuples.length; tupleIdx++) {
     const tuple = tuples[tupleIdx];
@@ -1719,35 +1908,62 @@ async function buildCarousel() {
     row.className = 'carousel-row';
     row.dataset.tupleIndex = tupleIdx;
 
-    for (let modIdx = 0; modIdx < tuple.imageData.length; modIdx++) {
-      const imgData = tuple.imageData[modIdx];
-      const thumb = document.createElement('img');
-      thumb.className = 'carousel-thumb';
-      thumb.style.width = CAROUSEL_THUMB_SIZE + 'px';
-      thumb.style.height = CAROUSEL_THUMB_SIZE + 'px';
-      thumb.dataset.tupleIndex = tupleIdx;
-      thumb.dataset.modalityIndex = modIdx;
+    // Iterate over all modalities (not just tuple.imageData)
+    for (let modIdx = 0; modIdx < modalities.length; modIdx++) {
+      const modalityName = modalities[modIdx];
+      const imgData = findImageForModality(tuple, modalityName);
 
-      const file = imgData.file;
+      if (imgData) {
+        // Normal thumbnail
+        const thumb = document.createElement('img');
+        thumb.className = 'carousel-thumb';
+        thumb.style.width = CAROUSEL_THUMB_SIZE + 'px';
+        thumb.style.height = CAROUSEL_THUMB_SIZE + 'px';
+        thumb.dataset.tupleIndex = tupleIdx;
+        thumb.dataset.modalityIndex = modIdx;
+        thumb.dataset.modality = modalityName;
 
-      // If cached, set immediately
-      if (thumbnailCache.has(file)) {
-        thumb.src = thumbnailCache.get(file);
-        loadedThumbs++;
+        const file = imgData.file;
+
+        // If cached, set immediately
+        if (thumbnailCache.has(file)) {
+          thumb.src = thumbnailCache.get(file);
+          loadedThumbs++;
+        } else {
+          // Queue for sequential generation
+          thumbElements.push({ thumb, file, tupleIdx, modIdx });
+        }
+
+        // Click handler
+        thumb.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const ti = parseInt(thumb.dataset.tupleIndex);
+          const mi = parseInt(thumb.dataset.modalityIndex);
+          goToTupleAndModality(ti, mi);
+        });
+
+        row.appendChild(thumb);
       } else {
-        // Queue for sequential generation
-        thumbElements.push({ thumb, file, tupleIdx, modIdx });
+        // Placeholder for missing modality
+        const placeholder = document.createElement('div');
+        placeholder.className = 'carousel-thumb placeholder';
+        placeholder.style.width = CAROUSEL_THUMB_SIZE + 'px';
+        placeholder.style.height = CAROUSEL_THUMB_SIZE + 'px';
+        placeholder.dataset.tupleIndex = tupleIdx;
+        placeholder.dataset.modalityIndex = modIdx;
+        placeholder.dataset.modality = modalityName;
+        placeholder.title = `${modalityName} not available`;
+
+        // Click handler - navigate to tuple (will fallback to available modality)
+        placeholder.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const ti = parseInt(placeholder.dataset.tupleIndex);
+          const mi = parseInt(placeholder.dataset.modalityIndex);
+          goToTupleAndModality(ti, mi);
+        });
+
+        row.appendChild(placeholder);
       }
-
-      // Click handler
-      thumb.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const ti = parseInt(thumb.dataset.tupleIndex);
-        const mi = parseInt(thumb.dataset.modalityIndex);
-        goToTupleAndModality(ti, mi);
-      });
-
-      row.appendChild(thumb);
     }
 
     // Click on row
@@ -1805,6 +2021,9 @@ function rebuildCarouselThumbnails() {
 function updateCarouselSelection() {
   if (!isMultiTupleMode) return;
 
+  // Get current modality name from modalities array
+  const currentModality = modalities[currentModalityIndex];
+
   const rows = carousel.querySelectorAll('.carousel-row');
   rows.forEach((row, rowIdx) => {
     if (rowIdx === currentTupleIndex) {
@@ -1814,7 +2033,9 @@ function updateCarouselSelection() {
     }
 
     const thumbs = row.querySelectorAll('.carousel-thumb');
-    thumbs.forEach((thumb, thumbIdx) => {
+    thumbs.forEach((thumb) => {
+      const thumbModality = thumb.dataset.modality;
+
       // Active means it's in the current tuple
       if (rowIdx === currentTupleIndex) {
         thumb.classList.add('active');
@@ -1823,7 +2044,7 @@ function updateCarouselSelection() {
       }
 
       // Selected means it's the current modality in current tuple
-      if (rowIdx === currentTupleIndex && thumbIdx === currentIndex) {
+      if (rowIdx === currentTupleIndex && thumbModality === currentModality) {
         thumb.classList.add('selected');
       } else {
         thumb.classList.remove('selected');
@@ -1858,61 +2079,21 @@ function scrollCarouselToCurrentTuple() {
 async function goToTupleAndModality(tupleIdx, modalityIdx) {
   if (tupleIdx === currentTupleIndex) {
     // Same tuple, just switch modality
-    if (modalityIdx !== currentIndex) {
-      previousIndex = currentIndex;
-      currentIndex = modalityIdx;
+    if (modalityIdx !== currentModalityIndex) {
+      previousModalityIndex = currentModalityIndex;
+      currentModalityIndex = modalityIdx;
       render();
       updateCarouselSelection();
     }
   } else {
     // Different tuple - load it with the specified modality
-    currentTupleIndex = tupleIdx;
-    const tuple = tuples[tupleIdx];
-
-    try {
-      let loadedImages;
-
-      // Check if already preloaded
-      if (preloadedTuples.has(tupleIdx)) {
-        loadedImages = preloadedTuples.get(tupleIdx);
-      } else {
-        loadedImages = await Promise.all(
-          tuple.imageData.map(async (data) => {
-            const loaded = await loadImage(data.file);
-            loaded.modality = data.modality;
-            return loaded;
-          })
-        );
-        preloadedTuples.set(tupleIdx, loadedImages);
-      }
-
-      // Check aspect ratios - all must match
-      const aspects = loadedImages.map(img => img.width / img.height);
-      const baseAspect = aspects[0];
-      const tolerance = 0.01;
-
-      const mismatch = aspects.find((a, i) =>
-        i > 0 && Math.abs(a - baseAspect) / Math.max(a, baseAspect) > tolerance
-      );
-
-      if (mismatch !== undefined) {
-        console.warn(`Aspect ratio mismatch in tuple ${tupleIdx + 1}`);
-      }
-
-      activateViewer(loadedImages, tuple.name, modalityIdx);
-
-      // Trigger preloading
-      triggerPreload(tupleIdx);
-    } catch (err) {
-      alert('Error loading tuple: ' + err.message);
-    }
+    currentModalityIndex = modalityIdx;
+    await loadTuple(tupleIdx);
   }
 }
 
 function render() {
-  if (!images.length) return;
-
-  const { img, name, width, height, modality } = images[currentIndex];
+  if (modalities.length === 0) return;
 
   // Update modality selector
   updateModalitySelector();
@@ -1922,13 +2103,58 @@ function render() {
     updateCarouselSelection();
   }
 
-  // Update status text
-  let statusText = `${name} (${width}×${height}) | Zoom: ${zoom.toFixed(1)}×`;
-  if (isMultiTupleMode) {
-    const tupleName = tuples[currentTupleIndex].name;
-    statusText = `[${currentTupleIndex + 1}/${tuples.length}] ` + statusText;
+  const currentImage = images[currentModalityIndex];
+  const modalityName = modalities[currentModalityIndex];
+
+  // Check if current modality is missing
+  if (!currentImage) {
+    // Show "not available" placeholder
+    const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+
+    // Update status (two-part layout)
+    let nameText = `${modalityName}: not available`;
+    if (isMultiTupleMode) {
+      nameText = `[${currentTupleIndex + 1}/${tuples.length}] ` + nameText;
+    }
+    statusName.textContent = nameText;
+    statusInfo.textContent = `Zoom: ${zoom.toFixed(1)}×`;
+
+    // Draw placeholder on canvas
+    requestAnimationFrame(() => {
+      canvas.width = 400;
+      canvas.height = 200;
+      ctx.fillStyle = '#333';
+      ctx.fillRect(0, 0, 400, 200);
+      ctx.fillStyle = '#666';
+      ctx.font = 'bold 48px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('✕', 200, 90);
+      ctx.font = '16px sans-serif';
+      ctx.fillStyle = '#888';
+      ctx.fillText('Image not available', 200, 140);
+
+      canvas.style.width = '400px';
+      canvas.style.height = '200px';
+
+      const centerOffsetX = carouselOffset / 2;
+      canvas.style.transform = `translate(calc(-50% + ${centerOffsetX}px), -50%)`;
+
+      // Hide thumbnail navigator
+      thumbnail.classList.remove('active');
+    });
+    return;
   }
-  status.textContent = statusText;
+
+  const { img, name, width, height } = currentImage;
+
+  // Update status (two-part layout)
+  let nameText = `${name} (${width}×${height})`;
+  if (isMultiTupleMode) {
+    nameText = `[${currentTupleIndex + 1}/${tuples.length}] ` + nameText;
+  }
+  statusName.textContent = nameText;
+  statusInfo.textContent = `Zoom: ${zoom.toFixed(1)}×`;
 
   // Use requestAnimationFrame to ensure layout is updated before measuring
   requestAnimationFrame(() => {
@@ -2010,33 +2236,33 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  if (!images.length) return;
+  if (modalities.length === 0) return;
 
   switch(e.code) {
     case 'Space':
       e.preventDefault();
       if (!spaceDown) {
         spaceDown = true;
-        // Flip to previous image
-        const temp = currentIndex;
-        currentIndex = previousIndex;
-        previousIndex = temp;
+        // Flip to previous modality
+        const temp = currentModalityIndex;
+        currentModalityIndex = previousModalityIndex;
+        previousModalityIndex = temp;
         render();
       }
       break;
     case 'ArrowRight':
       e.preventDefault();
-      if (currentIndex < images.length - 1) {
-        previousIndex = currentIndex;
-        currentIndex++;
+      if (currentModalityIndex < modalities.length - 1) {
+        previousModalityIndex = currentModalityIndex;
+        currentModalityIndex++;
         render();
       }
       break;
     case 'ArrowLeft':
       e.preventDefault();
-      if (currentIndex > 0) {
-        previousIndex = currentIndex;
-        currentIndex--;
+      if (currentModalityIndex > 0) {
+        previousModalityIndex = currentModalityIndex;
+        currentModalityIndex--;
         render();
       }
       break;
@@ -2074,9 +2300,9 @@ document.addEventListener('keydown', (e) => {
     case 'Digit5': case 'Digit6': case 'Digit7': case 'Digit8': case 'Digit9':
       e.preventDefault();
       const idx = parseInt(e.code.replace('Digit', '')) - 1;
-      if (idx < images.length && idx !== currentIndex) {
-        previousIndex = currentIndex;
-        currentIndex = idx;
+      if (idx < modalities.length && idx !== currentModalityIndex) {
+        previousModalityIndex = currentModalityIndex;
+        currentModalityIndex = idx;
         render();
       }
       break;
@@ -2088,14 +2314,14 @@ document.addEventListener('keydown', (e) => {
       }
       // If already reset, go back to dropzone
       if (isReset && zoom === 1 && panX === 0 && panY === 0) {
-        images.forEach(img => { if (img.url) URL.revokeObjectURL(img.url); });
+        images.forEach(img => { if (img && img.url) URL.revokeObjectURL(img.url); });
         images = [];
         tuples = [];
         modalities = [];
         modalityColors = [];
         isMultiTupleMode = false;
-        currentIndex = 0;
-        previousIndex = 0;
+        currentModalityIndex = 0;
+        previousModalityIndex = 0;
         currentTupleIndex = 0;
         isReset = false;
         viewer.classList.remove('active');
@@ -2179,11 +2405,11 @@ document.addEventListener('mouseup', () => {
 document.addEventListener('keyup', (e) => {
   if (e.code === 'Space') {
     spaceDown = false;
-    if (images.length) {
+    if (modalities.length > 0) {
       // Flip back
-      const temp = currentIndex;
-      currentIndex = previousIndex;
-      previousIndex = temp;
+      const temp = currentModalityIndex;
+      currentModalityIndex = previousModalityIndex;
+      previousModalityIndex = temp;
       render();
     }
   }
@@ -2191,7 +2417,7 @@ document.addEventListener('keyup', (e) => {
 
 // Handle resize - re-render canvas immediately
 window.addEventListener('resize', () => {
-  if (images.length) render();
+  if (modalities.length > 0) render();
 });
 
 // Carousel mouse wheel scrolling
