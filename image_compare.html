@@ -353,6 +353,37 @@ body {
   font-weight: bold;
 }
 
+/* Winner voting indicators */
+.carousel-thumb-container {
+  position: relative;
+  flex-shrink: 0;
+}
+.winner-indicator {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: all 0.15s;
+  z-index: 5;
+}
+.winner-indicator:hover {
+  background: rgba(255, 255, 255, 0.4);
+  border-color: rgba(255, 255, 255, 0.6);
+}
+.winner-indicator.winner {
+  background: #0f0;
+  border-color: #fff;
+  box-shadow: 0 0 3px rgba(0, 255, 0, 0.5);
+}
+.winner-indicator.winner:hover {
+  background: #0c0;
+  border-color: #fff;
+}
+
 /* Carousel resize handle */
 #carousel-resize {
   display: none;
@@ -416,7 +447,7 @@ body {
     </p>
     <p style="margin-top: 20px; color: #666; font-size: 12px; line-height: 1.8;">
       ←→: modality | ↑↓: tuple | Space: flip | 1-9: jump to modality<br>
-      [ ]: reorder modality | Scroll: zoom | Drag: pan | Esc: reset
+      [ ]: reorder modality | Enter: toggle winner | Scroll: zoom | Drag: pan | Esc: reset
     </p>
   </div>
 </div>
@@ -454,6 +485,7 @@ body {
       <tr><td>Space</td><td>Flip to previous modality (hold)</td></tr>
       <tr><td>1-9</td><td>Jump to modality N</td></tr>
       <tr><td>[ ]</td><td>Reorder current modality</td></tr>
+      <tr><td>Enter</td><td>Toggle winner for current modality</td></tr>
       <tr><td>Scroll</td><td>Zoom in/out</td></tr>
       <tr><td>Drag</td><td>Pan image</td></tr>
       <tr><td>Esc</td><td>Reset zoom (2x: back to start)</td></tr>
@@ -546,6 +578,11 @@ let currentTupleIndex = 0;
 let modalities = [];  // Array of modality names
 let modalityColors = [];  // Color assigned to each modality
 let isMultiTupleMode = false;
+
+// Winner voting state
+let winners = new Map();  // tupleIndex -> modalityIndex
+let votingEnabled = false;  // Only enabled in directory mode
+let rootDirHandle = null;  // Directory handle for saving results.txt (File System Access API)
 
 // Thumbnail cache: Map of File object -> canvas data URL (file-based key survives reordering)
 const thumbnailCache = new WeakMap();
@@ -694,6 +731,11 @@ async function handleFolderInput(files) {
     return;
   }
 
+  // Folder input doesn't provide directory handle for writing
+  rootDirHandle = null;
+  votingEnabled = false;
+  winners = new Map();
+
   // Process subdirectories as modalities
   await processSubdirectoriesAsModalities(filesByDir);
 }
@@ -741,6 +783,11 @@ async function handleSingleDirectory(dirEntry) {
     return;
   }
 
+  // Legacy API doesn't support directory handles for writing
+  rootDirHandle = null;
+  votingEnabled = false;
+  winners = new Map();
+
   await processSubdirectoriesAsModalitiesLegacy(filesByDir);
 }
 
@@ -772,7 +819,15 @@ async function handleSingleDirectoryModern(dirHandle) {
     return;
   }
 
+  // Store directory handle for saving results.txt
+  rootDirHandle = dirHandle;
+  votingEnabled = true;
+  winners = new Map();
+
   await processSubdirectoriesAsModalitiesModern(filesByDir);
+
+  // Load existing winners from results.txt
+  await loadResults();
 }
 
 async function processSubdirectoriesAsModalities(filesByDir) {
@@ -1306,6 +1361,159 @@ async function readDirectoryModern(dirHandle) {
   return files;
 }
 
+// Winner voting functions
+
+/**
+ * Toggle winner for current tuple/modality
+ */
+function toggleWinner(tupleIndex, modalityIndex) {
+  if (!votingEnabled) return;
+
+  const currentWinner = winners.get(tupleIndex);
+
+  if (currentWinner === modalityIndex) {
+    // Already winner - clear it
+    winners.delete(tupleIndex);
+  } else {
+    // Set as winner
+    winners.set(tupleIndex, modalityIndex);
+  }
+
+  // Update UI
+  updateCarouselWinners();
+  updateModalitySelector();
+
+  // Save to file
+  saveResults();
+}
+
+/**
+ * Update winner indicators in carousel
+ */
+function updateCarouselWinners() {
+  if (!isMultiTupleMode || !votingEnabled) return;
+
+  const indicators = carousel.querySelectorAll('.winner-indicator');
+  indicators.forEach((indicator) => {
+    const tupleIdx = parseInt(indicator.dataset.tupleIndex);
+    const modIdx = parseInt(indicator.dataset.modalityIndex);
+
+    const winnerModalityIdx = winners.get(tupleIdx);
+    if (winnerModalityIdx === modIdx) {
+      indicator.classList.add('winner');
+    } else {
+      indicator.classList.remove('winner');
+    }
+  });
+}
+
+/**
+ * Save winners to results.txt using File System Access API
+ */
+async function saveResults() {
+  if (!rootDirHandle || !votingEnabled) return;
+
+  try {
+    // If no winners, delete the file
+    if (winners.size === 0) {
+      try {
+        await rootDirHandle.removeEntry('results.txt');
+      } catch {
+        // File doesn't exist - that's OK
+      }
+      return;
+    }
+
+    // Build file content
+    const lines = [
+      '# ImageCompare Results',
+      `# Generated: ${new Date().toISOString()}`,
+      `# Modalities: ${modalities.join(', ')}`,
+      '#',
+      '# Format: tuple_key = winner_modality',
+      '# Delete a line to remove the vote, edit modality name to change vote',
+      ''
+    ];
+
+    // Sort winners by tuple index for consistent output
+    const sortedWinners = Array.from(winners.entries()).sort((a, b) => a[0] - b[0]);
+
+    for (const [tupleIndex, modalityIndex] of sortedWinners) {
+      const tuple = tuples[tupleIndex];
+      const modalityName = modalities[modalityIndex];
+      if (tuple && modalityName) {
+        lines.push(`${tuple.name} = ${modalityName}`);
+      }
+    }
+
+    const content = lines.join('\n') + '\n';
+
+    // Write to file
+    const fileHandle = await rootDirHandle.getFileHandle('results.txt', { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(content);
+    await writable.close();
+
+    console.log('Saved results.txt');
+  } catch (err) {
+    console.warn('Failed to save results.txt:', err);
+  }
+}
+
+/**
+ * Load winners from results.txt
+ */
+async function loadResults() {
+  if (!rootDirHandle || !votingEnabled) return;
+
+  try {
+    const fileHandle = await rootDirHandle.getFileHandle('results.txt');
+    const file = await fileHandle.getFile();
+    const content = await file.text();
+
+    // Parse file
+    const savedWinners = new Map();  // tupleName -> modalityName
+    const lines = content.split('\n');
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      const eqIndex = trimmed.indexOf('=');
+      if (eqIndex === -1) continue;
+
+      const tupleKey = trimmed.substring(0, eqIndex).trim();
+      const modalityName = trimmed.substring(eqIndex + 1).trim();
+
+      if (tupleKey && modalityName) {
+        savedWinners.set(tupleKey, modalityName);
+      }
+    }
+
+    // Map saved winners to indices
+    winners = new Map();
+    for (let tupleIndex = 0; tupleIndex < tuples.length; tupleIndex++) {
+      const tuple = tuples[tupleIndex];
+      const winnerName = savedWinners.get(tuple.name);
+      if (winnerName) {
+        const modalityIndex = modalities.indexOf(winnerName);
+        if (modalityIndex !== -1) {
+          winners.set(tupleIndex, modalityIndex);
+        }
+      }
+    }
+
+    console.log(`Loaded ${winners.size} winners from results.txt`);
+
+    // Update UI
+    updateCarouselWinners();
+    updateModalitySelector();
+  } catch (err) {
+    // File doesn't exist or can't be read - that's OK
+    console.log('No results.txt found or failed to load');
+  }
+}
+
 // Generate thumbnail data URL from file using createImageBitmap for non-blocking decode
 async function generateThumbnail(file, size) {
   const ext = file.name.split('.').pop().toLowerCase();
@@ -1532,6 +1740,11 @@ async function handleFilesAsTuple(imageFiles) {
   const names = imageFiles.map(f => f.name);
   modalities = findDifferingParts(names);
   modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
+
+  // File mode doesn't support voting (no directory to save to)
+  rootDirHandle = null;
+  votingEnabled = false;
+  winners = new Map();
 
   // Ensure unique modality names
   const seen = new Map();
@@ -1908,6 +2121,23 @@ function moveCurrentModality(direction) {
   // with objects that have their own 'modality' field. The carousel and
   // loading code look up images by modality name, not by array index.
 
+  // Update winners to reflect swapped indices
+  if (votingEnabled) {
+    const newWinners = new Map();
+    for (const [tupleIndex, winnerIdx] of winners) {
+      if (winnerIdx === currentPos) {
+        newWinners.set(tupleIndex, newPos);
+      } else if (winnerIdx === newPos) {
+        newWinners.set(tupleIndex, currentPos);
+      } else {
+        newWinners.set(tupleIndex, winnerIdx);
+      }
+    }
+    winners = newWinners;
+    // Save updated winners
+    saveResults();
+  }
+
   // Update currentModalityIndex to follow the moved modality
   currentModalityIndex = newPos;
 
@@ -1926,6 +2156,16 @@ function moveCurrentModality(direction) {
 }
 
 function updateModalitySelector() {
+  // Calculate win counts per modality
+  const winCounts = new Array(modalities.length).fill(0);
+  if (votingEnabled) {
+    for (const [_, modalityIdx] of winners) {
+      if (modalityIdx >= 0 && modalityIdx < winCounts.length) {
+        winCounts[modalityIdx]++;
+      }
+    }
+  }
+
   const buttons = modalitySelector.querySelectorAll('.modality-btn');
   buttons.forEach((btn) => {
     const idx = parseInt(btn.dataset.index);
@@ -1935,6 +2175,14 @@ function updateModalitySelector() {
     } else {
       btn.classList.remove('active');
       btn.classList.add('inactive');
+    }
+
+    // Update button text with win count if voting enabled and has wins
+    const modalityName = modalities[idx];
+    if (votingEnabled && winCounts[idx] > 0) {
+      btn.textContent = `${idx + 1}: ${modalityName} (${winCounts[idx]})`;
+    } else {
+      btn.textContent = `${idx + 1}: ${modalityName}`;
     }
   });
 
@@ -2001,6 +2249,12 @@ async function buildCarousel() {
       const modalityName = modalities[modIdx];
       const imgData = findImageForModality(tuple, modalityName);
 
+      // Create container for thumbnail + winner indicator
+      const container = document.createElement('div');
+      container.className = 'carousel-thumb-container';
+      container.style.width = CAROUSEL_THUMB_SIZE + 'px';
+      container.style.height = CAROUSEL_THUMB_SIZE + 'px';
+
       if (imgData) {
         // Normal thumbnail
         const thumb = document.createElement('img');
@@ -2030,7 +2284,7 @@ async function buildCarousel() {
           goToTupleAndModality(ti, mi);
         });
 
-        row.appendChild(thumb);
+        container.appendChild(thumb);
       } else {
         // Placeholder for missing modality
         const placeholder = document.createElement('div');
@@ -2050,8 +2304,30 @@ async function buildCarousel() {
           goToTupleAndModality(ti, mi);
         });
 
-        row.appendChild(placeholder);
+        container.appendChild(placeholder);
       }
+
+      // Add winner indicator if voting is enabled
+      if (votingEnabled) {
+        const indicator = document.createElement('div');
+        indicator.className = 'winner-indicator';
+        indicator.dataset.tupleIndex = tupleIdx;
+        indicator.dataset.modalityIndex = modIdx;
+
+        // Check if this is the winner
+        if (winners.get(tupleIdx) === modIdx) {
+          indicator.classList.add('winner');
+        }
+
+        indicator.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleWinner(tupleIdx, modIdx);
+        });
+
+        container.appendChild(indicator);
+      }
+
+      row.appendChild(container);
     }
 
     // Click on row
@@ -2120,8 +2396,12 @@ function updateCarouselSelection() {
       row.classList.remove('current');
     }
 
-    const thumbs = row.querySelectorAll('.carousel-thumb');
-    thumbs.forEach((thumb) => {
+    // Find thumbs inside containers
+    const containers = row.querySelectorAll('.carousel-thumb-container');
+    containers.forEach((container) => {
+      const thumb = container.querySelector('.carousel-thumb');
+      if (!thumb) return;
+
       const thumbModality = thumb.dataset.modality;
 
       // Active means it's in the current tuple
@@ -2394,6 +2674,12 @@ document.addEventListener('keydown', (e) => {
         render();
       }
       break;
+    case 'Enter':
+      e.preventDefault();
+      if (votingEnabled && isMultiTupleMode) {
+        toggleWinner(currentTupleIndex, currentModalityIndex);
+      }
+      break;
     case 'KeyR':
     case 'Escape':
       if (e.code === 'Escape' && errorModal.classList.contains('active')) {
@@ -2412,6 +2698,10 @@ document.addEventListener('keydown', (e) => {
         previousModalityIndex = 0;
         currentTupleIndex = 0;
         isReset = false;
+        // Reset winner state
+        winners = new Map();
+        votingEnabled = false;
+        rootDirHandle = null;
         viewer.classList.remove('active');
         dropzone.classList.remove('hidden');
         info.classList.add('hidden');
