@@ -480,7 +480,7 @@ body {
 
 <script>
 // Version
-const VERSION = 'v0.1.0';
+const VERSION = 'v0.1.1';
 
 // Set version in UI
 document.getElementById('help-version').textContent = VERSION;
@@ -780,44 +780,23 @@ async function processSubdirectoriesAsModalities(filesByDir) {
   modalities = Array.from(filesByDir.keys()).sort();
   modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
 
-  // Build a map of matching key -> modality -> file
-  const filesByKey = new Map();
+  // Use trie-based matching to group files into tuples
+  const matchedTuples = matchTuplesWithTrie(filesByDir, modalities);
 
-  for (const modality of modalities) {
-    const files = filesByDir.get(modality);
-    for (const file of files) {
-      const key = extractMatchingKey(file.name);
-
-      if (!filesByKey.has(key)) {
-        filesByKey.set(key, new Map());
-      }
-      // If multiple files from same modality have same key, keep the first one
-      if (!filesByKey.get(key).has(modality)) {
-        filesByKey.get(key).set(modality, file);
-      }
-    }
-  }
-
-  if (filesByKey.size === 0) {
+  if (matchedTuples.length === 0) {
     alert('No images found in modalities');
     return;
   }
 
-  // Sort keys naturally
-  const sortedKeys = Array.from(filesByKey.keys()).sort((a, b) =>
-    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-  );
-
   // Build tuples from matched files
   tuples = [];
-  for (const key of sortedKeys) {
-    const filesForTuple = filesByKey.get(key);
+  for (const matched of matchedTuples) {
     const tupleImages = [];
     const names = [];
 
     // Add files in modality order
     for (const modality of modalities) {
-      const file = filesForTuple.get(modality);
+      const file = matched.files.get(modality);
       if (file) {
         tupleImages.push({
           file,
@@ -829,7 +808,7 @@ async function processSubdirectoriesAsModalities(filesByDir) {
 
     // Only create tuple if at least one image exists
     if (tupleImages.length > 0) {
-      const tupleName = findCommonSubstring(names) || key;
+      const tupleName = findCommonSubstring(names) || matched.key;
       tuples.push({
         name: tupleName,
         imageData: tupleImages
@@ -857,47 +836,38 @@ async function processSubdirectoriesAsModalitiesLegacy(filesByDir) {
   modalities = Array.from(filesByDir.keys()).sort();
   modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
 
-  // Build a map of matching key -> modality -> file
-  const filesByKey = new Map();
-
+  // Legacy format has {name, file} objects - convert to file-like with name property
+  const filesByModality = new Map();
   for (const modality of modalities) {
     const files = filesByDir.get(modality);
-    for (const fileData of files) {
-      const key = extractMatchingKey(fileData.name);
-
-      if (!filesByKey.has(key)) {
-        filesByKey.set(key, new Map());
-      }
-      // If multiple files from same modality have same key, keep the first one
-      if (!filesByKey.get(key).has(modality)) {
-        filesByKey.get(key).set(modality, fileData);
-      }
-    }
+    // Wrap legacy format: {name, file} -> file with .name accessible
+    filesByModality.set(modality, files.map(fd => ({
+      ...fd.file,
+      name: fd.name,
+      _originalFile: fd.file
+    })));
   }
 
-  if (filesByKey.size === 0) {
+  // Use trie-based matching to group files into tuples
+  const matchedTuples = matchTuplesWithTrie(filesByModality, modalities);
+
+  if (matchedTuples.length === 0) {
     alert('No images found in modalities');
     return;
   }
 
-  // Sort keys naturally
-  const sortedKeys = Array.from(filesByKey.keys()).sort((a, b) =>
-    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-  );
-
   // Build tuples from matched files
   tuples = [];
-  for (const key of sortedKeys) {
-    const filesForTuple = filesByKey.get(key);
+  for (const matched of matchedTuples) {
     const tupleImages = [];
     const names = [];
 
     // Add files in modality order
     for (const modality of modalities) {
-      const fileData = filesForTuple.get(modality);
+      const fileData = matched.files.get(modality);
       if (fileData) {
         tupleImages.push({
-          file: fileData.file,
+          file: fileData._originalFile || fileData,
           modality
         });
         names.push(fileData.name);
@@ -906,7 +876,7 @@ async function processSubdirectoriesAsModalitiesLegacy(filesByDir) {
 
     // Only create tuple if at least one image exists
     if (tupleImages.length > 0) {
-      const tupleName = findCommonSubstring(names) || key;
+      const tupleName = findCommonSubstring(names) || matched.key;
       tuples.push({
         name: tupleName,
         imageData: tupleImages
@@ -933,47 +903,38 @@ async function processSubdirectoriesAsModalitiesModern(filesByDir) {
   modalities = Array.from(filesByDir.keys()).sort();
   modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
 
-  // Build a map of matching key -> modality -> file
-  const filesByKey = new Map();
-
+  // Modern format has {name, file} objects - convert to file-like with name property
+  const filesByModality = new Map();
   for (const modality of modalities) {
     const files = filesByDir.get(modality);
-    for (const fileData of files) {
-      const key = extractMatchingKey(fileData.name);
-
-      if (!filesByKey.has(key)) {
-        filesByKey.set(key, new Map());
-      }
-      // If multiple files from same modality have same key, keep the first one
-      if (!filesByKey.get(key).has(modality)) {
-        filesByKey.get(key).set(modality, fileData);
-      }
-    }
+    // Wrap modern format: {name, file} -> file with .name accessible
+    filesByModality.set(modality, files.map(fd => ({
+      ...fd.file,
+      name: fd.name,
+      _originalFile: fd.file
+    })));
   }
 
-  if (filesByKey.size === 0) {
+  // Use trie-based matching to group files into tuples
+  const matchedTuples = matchTuplesWithTrie(filesByModality, modalities);
+
+  if (matchedTuples.length === 0) {
     alert('No images found in modalities');
     return;
   }
 
-  // Sort keys naturally
-  const sortedKeys = Array.from(filesByKey.keys()).sort((a, b) =>
-    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-  );
-
   // Build tuples from matched files
   tuples = [];
-  for (const key of sortedKeys) {
-    const filesForTuple = filesByKey.get(key);
+  for (const matched of matchedTuples) {
     const tupleImages = [];
     const names = [];
 
     // Add files in modality order
     for (const modality of modalities) {
-      const fileData = filesForTuple.get(modality);
+      const fileData = matched.files.get(modality);
       if (fileData) {
         tupleImages.push({
-          file: fileData.file,
+          file: fileData._originalFile || fileData,
           modality
         });
         names.push(fileData.name);
@@ -982,7 +943,7 @@ async function processSubdirectoriesAsModalitiesModern(filesByDir) {
 
     // Only create tuple if at least one image exists
     if (tupleImages.length > 0) {
-      const tupleName = findCommonSubstring(names) || key;
+      const tupleName = findCommonSubstring(names) || matched.key;
       tuples.push({
         name: tupleName,
         imageData: tupleImages
@@ -1167,37 +1128,164 @@ function naturalSort(a, b) {
   return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 }
 
-// Extract a matching key from filename (leading identifier before varying suffixes)
-// e.g., "202505210021_LMU_..." -> "202505210021"
-// e.g., "20251023_#WH768x1024.ppmx" -> "20251023"
-// e.g., "250928_01_#WH768x1024.ppmx" -> "250928_01"
-function extractMatchingKey(filename) {
-  // Remove extension
-  const baseName = filename.replace(/\.[^.]+$/, '');
+// Strip file extension
+function stripExtension(filename) {
+  return filename.replace(/\.[^.]+$/, '');
+}
 
-  // Try to extract leading numeric identifier
-  // Match: any sequence of digits, optionally followed by underscore and more digits
-  // Examples: "202505210021", "20251023", "250928_01"
-  const numericMatch = baseName.match(/^(\d+(?:_\d+)*)/);
-  if (numericMatch) {
-    return numericMatch[1];
+// Longest Common Subsequence length for tie-breaking
+// Uses O(n) space with two-row optimization
+function lcsLength(a, b) {
+  const m = a.length, n = b.length;
+  let prev = new Array(n + 1).fill(0);
+  let curr = new Array(n + 1).fill(0);
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i-1] === b[j-1]) {
+        curr[j] = prev[j-1] + 1;
+      } else {
+        curr[j] = Math.max(prev[j], curr[j-1]);
+      }
+    }
+    [prev, curr] = [curr, prev];
   }
 
-  // Try to extract alphanumeric identifier with optional sequence numbers
-  // Pattern: letters + optional digits + optional (_digits) groups
-  // Examples: "test1", "image_001", "sample_42", "test"
-  const alphaNumMatch = baseName.match(/^([a-zA-Z]+\d*(?:_\d+)*)/);
-  if (alphaNumMatch) {
-    return alphaNumMatch[1];
+  return prev[n];
+}
+
+// Trie-based tuple matching with LCP scoring and LCS tie-breaking
+//
+// Algorithm:
+// 1. Pick reference modality (one with most files)
+// 2. Build trie from reference filenames - each node tracks which files pass through
+// 3. For each file in other modalities:
+//    - Walk trie to find longest matching prefix (LCP)
+//    - Collect candidate reference files at deepest matched node
+//    - Use LCS (longest common subsequence) as tie-breaker
+// 4. Group files by their matched reference file
+//
+// Complexity: O(N * L) for trie ops, O(ties * L²) for LCS tie-breaking
+// where N = total files, L = max filename length
+function matchTuplesWithTrie(filesByModality, modalityNames) {
+  if (modalityNames.length < 2) {
+    // Single modality - return each file as its own tuple
+    if (modalityNames.length === 1) {
+      const mod = modalityNames[0];
+      const files = filesByModality.get(mod) || [];
+      return files.map(f => ({
+        key: stripExtension(f.name),
+        files: new Map([[mod, f]])
+      }));
+    }
+    return [];
   }
 
-  // Fallback: use everything up to first underscore or special character
-  const prefixMatch = baseName.match(/^([^_#]+)/);
-  if (prefixMatch) {
-    return prefixMatch[1];
+  // Pick reference modality (most files) - ensures best coverage
+  let refMod = modalityNames[0];
+  let maxCount = (filesByModality.get(refMod) || []).length;
+  for (const mod of modalityNames) {
+    const count = (filesByModality.get(mod) || []).length;
+    if (count > maxCount) {
+      maxCount = count;
+      refMod = mod;
+    }
   }
 
-  return baseName;
+  const refFiles = filesByModality.get(refMod) || [];
+  if (refFiles.length === 0) return [];
+
+  // Build trie from reference filenames
+  // Each node has: children (Map), indices (array of refFile indices that pass through)
+  const trie = { children: new Map(), indices: [] };
+
+  for (let i = 0; i < refFiles.length; i++) {
+    const key = stripExtension(refFiles[i].name);
+    let node = trie;
+    // Add index at root level too (for files with no common prefix)
+    node.indices.push(i);
+
+    for (const char of key) {
+      if (!node.children.has(char)) {
+        node.children.set(char, { children: new Map(), indices: [] });
+      }
+      node = node.children.get(char);
+      node.indices.push(i);
+    }
+  }
+
+  // Create tuple map: refIndex -> Map(modality -> file)
+  const tupleMap = new Map();
+  for (let i = 0; i < refFiles.length; i++) {
+    tupleMap.set(i, new Map([[refMod, refFiles[i]]]));
+  }
+
+  // Track which reference files got matched (for orphan detection)
+  const matchedToRef = new Map(); // non-ref file -> refIndex
+
+  // Match files from other modalities using trie lookup
+  for (const mod of modalityNames) {
+    if (mod === refMod) continue;
+
+    const files = filesByModality.get(mod) || [];
+    for (const file of files) {
+      const query = stripExtension(file.name);
+
+      // Walk trie to find deepest matching node (longest common prefix)
+      let node = trie;
+      let bestNode = trie;  // Track deepest node with indices
+
+      for (const char of query) {
+        if (!node.children.has(char)) break;
+        node = node.children.get(char);
+        if (node.indices.length > 0) {
+          bestNode = node;
+        }
+      }
+
+      const candidates = bestNode.indices;
+      if (candidates.length === 0) {
+        // No match found - skip (shouldn't happen with valid trie)
+        continue;
+      }
+
+      // Find best match among candidates
+      let bestIdx = candidates[0];
+
+      if (candidates.length > 1) {
+        // Tie-breaker: use LCS (longest common subsequence)
+        // Files with more characters in common (even non-contiguous) score higher
+        let bestScore = -1;
+        for (const idx of candidates) {
+          const refName = stripExtension(refFiles[idx].name);
+          const score = lcsLength(query, refName);
+          if (score > bestScore) {
+            bestScore = score;
+            bestIdx = idx;
+          }
+        }
+      }
+
+      // Add to tuple
+      tupleMap.get(bestIdx).set(mod, file);
+    }
+  }
+
+  // Convert to array format expected by the caller
+  const result = [];
+  for (const [idx, filesMap] of tupleMap) {
+    result.push({
+      key: stripExtension(refFiles[idx].name),
+      files: filesMap
+    });
+  }
+
+  // Sort by key for consistent ordering
+  result.sort((a, b) =>
+    a.key.localeCompare(b.key, undefined, { numeric: true, sensitivity: 'base' })
+  );
+
+  return result;
 }
 
 async function readDirectoryModern(dirHandle) {
