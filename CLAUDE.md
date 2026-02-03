@@ -18,21 +18,21 @@ Single-file HTML image comparison tool. All code (HTML, CSS, JavaScript) is in `
 
 Navigation uses modality position, not image index. This allows navigating to "slots" where an image is missing, showing a placeholder. The `previousModalityIndex` enables spacebar flip behavior.
 
-### Tuple Matching
+### Tuple Matching (Two-Pass)
 
-`matchTuplesWithTrie(filesByModality, modalityNames)` uses a trie-based algorithm with LCS scoring:
+`matchTuplesWithTrie(filesByModality, modalityNames)` uses a two-pass trie-based algorithm:
 
 1. **Reference modality**: Picks modality with most files as reference
-2. **Trie construction**: Builds trie from reference filenames - each node tracks which files pass through it
-3. **LCP matching**: For each file in other modalities, walks trie to find longest common prefix (LCP)
-4. **LCS tie-breaking**: When multiple reference files share the same LCP, uses Longest Common Subsequence (LCS) to pick best match
+2. **Trie construction**: Builds trie from reference filenames
+3. **Pass 1 - Exact matching**: Files with identical basenames across modalities are matched first (handles crop files like `img_00079_crop01.png`)
+4. **Pass 2 - Fuzzy trie matching**: Remaining files use LCP walk + LCS tie-breaking, excluding refs already claimed by exact matches
 
 Complexity: O(N × L) for trie operations, O(ties × L²) for LCS tie-breaking
 
 This handles:
-- Different naming conventions across modalities (e.g., `img_00001_gt.png` matches `img_00001_pred_v2.png`)
+- Crop files with identical names across modalities (exact match in pass 1)
+- Different naming conventions across modalities (fuzzy match in pass 2)
 - Missing files in some modalities (gracefully creates partial tuples)
-- Single-file modalities (matches to best LCP/LCS candidate)
 - Identifiers embedded in middle of filenames (LCS catches common substrings)
 
 ### Thumbnail Generation
@@ -61,6 +61,22 @@ Do NOT swap in `tuple.imageData` - it uses modality names for lookup, not array 
 - Modality buttons get `.unavailable` class (strikethrough)
 - All placeholders are clickable/navigable
 
+### Crop Tool
+
+Press `C` or click Crop button to enter crop mode. Draw a rectangle on the image, resize with handles, confirm with Enter. Crops are saved as `{tuple_name}_cropNN.png` to each modality directory via File System Access API. The file poller detects new crop files and adds them as a new tuple.
+
+### Delete
+
+Press `Delete`/`Backspace` or click Delete button to remove all files for the current tuple. Uses File System Access API to delete from disk.
+
+### File Polling
+
+Every 2 seconds, all modality directories are re-read via File System Access API. If the file listing changed (new files, deletions, renames), tuple matching is re-run and the UI updates. Only active in directory mode (when `votingEnabled` is true).
+
+### Debug Logging
+
+Set `const DEBUG = true;` near the top of the script to enable console diagnostics. Logs: poll results, crop saves, tuple deletions, matching stats.
+
 ## Version
 
 Version constant `VERSION` at top of script. Displayed in dropzone header and help modal.
@@ -68,6 +84,13 @@ Version constant `VERSION` at top of script. Displayed in dropzone header and he
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
+
+### v0.1.7
+- Two-pass tuple matching (exact + fuzzy) for correct crop file grouping
+- Crop tool (C key) with resize handles, saves to all modality directories
+- Delete button (Del key) removes current tuple files from disk
+- File polling (2s interval) detects external changes via File System Access API
+- Debug logging flag (`DEBUG`) for console diagnostics
 
 ### v0.1.1
 - Replaced regex-based tuple matching with trie-based algorithm using LCP/LCS scoring

@@ -57,19 +57,51 @@ body {
   image-rendering: crisp-edges;
 }
 
-#thumbnail {
+/* Floating panel (minimap + tools) */
+#floating-panel {
   position: absolute;
   top: 10px;
   right: 10px;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.85);
   border: 1px solid #444;
-  border-radius: 4px;
-  padding: 4px;
+  border-radius: 6px;
+  z-index: 20;
+  min-width: 160px;
+  user-select: none;
   display: none;
 }
-#thumbnail.active { display: block; }
+#floating-panel.active { display: block; }
+#fp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1px 6px;
+  cursor: move;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 6px 6px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #ccc;
+  letter-spacing: 0.3px;
+}
+#fp-collapse-btn {
+  cursor: pointer;
+  font-size: 18px;
+  padding: 0 2px;
+  line-height: 1;
+  color: #fff;
+}
+#fp-body { padding: 4px; }
+#floating-panel.collapsed #fp-body { display: none; }
+#floating-panel.collapsed { min-width: auto; }
+#floating-panel.collapsed #fp-header { border-radius: 6px; }
+#fp-minimap {
+  position: relative;
+  margin-bottom: 4px;
+}
 #thumb-canvas {
   display: block;
+  margin: 0 auto;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
@@ -79,6 +111,12 @@ body {
   pointer-events: none;
   box-sizing: border-box;
 }
+#fp-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+#fp-actions.hidden { display: none; }
 
 #info {
   background: #2a2a2a;
@@ -434,6 +472,72 @@ body {
 .btn-primary { background: #0af; color: #000; }
 .btn-secondary { background: #444; color: #fff; }
 .btn:hover { opacity: 0.9; }
+
+/* Crop / Delete buttons in floating panel */
+#crop-btn, #delete-btn {
+  padding: 3px 8px;
+  background: #444;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+#crop-btn:hover { background: #555; }
+#crop-btn.active { background: #0af; color: #000; }
+#delete-btn:hover { background: #a33; }
+
+/* Crop overlay */
+#crop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  cursor: crosshair;
+}
+.crop-dim {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+.crop-rect {
+  position: absolute;
+  border: 2px solid #0f0;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+.crop-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border: 1px solid #333;
+  border-radius: 2px;
+  z-index: 16;
+}
+.crop-toolbar {
+  position: absolute;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+  z-index: 16;
+}
+.crop-toolbar-btn {
+  padding: 3px 10px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.crop-confirm {
+  background: #2ea043;
+  color: #fff;
+}
+.crop-confirm:hover { background: #3fb950; }
+.crop-cancel {
+  background: #444;
+  color: #fff;
+}
+.crop-cancel:hover { background: #555; }
 </style>
 </head>
 <body>
@@ -447,7 +551,8 @@ body {
     </p>
     <p style="margin-top: 20px; color: #666; font-size: 12px; line-height: 1.8;">
       ←→: modality | ↑↓: tuple | Space: flip | 1-9: jump to modality<br>
-      [ ]: reorder modality | Enter: toggle winner | Scroll: zoom | Drag: pan | Esc: reset
+      [ ]: reorder modality | Enter: toggle winner | C: crop | Del: delete tuple<br>
+      Scroll: zoom | Drag: pan | Esc: reset
     </p>
   </div>
 </div>
@@ -460,9 +565,21 @@ body {
     <div id="progress-bar"><div id="progress-fill"></div></div>
   </div>
   <canvas id="canvas"></canvas>
-  <div id="thumbnail">
-    <canvas id="thumb-canvas"></canvas>
-    <div id="thumb-viewport"></div>
+  <div id="floating-panel">
+    <div id="fp-header">
+      <span id="fp-title">Tools</span>
+      <span id="fp-collapse-btn">&#9662;</span>
+    </div>
+    <div id="fp-body">
+      <div id="fp-minimap">
+        <canvas id="thumb-canvas"></canvas>
+        <div id="thumb-viewport"></div>
+      </div>
+      <div id="fp-actions">
+        <button id="crop-btn" title="Crop all modalities (C)">Crop</button>
+        <button id="delete-btn" title="Delete current tuple files (Del)">Delete</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -488,6 +605,8 @@ body {
       <tr><td>Enter</td><td>Toggle winner for current modality</td></tr>
       <tr><td>Scroll</td><td>Zoom in/out</td></tr>
       <tr><td>Drag</td><td>Pan image</td></tr>
+      <tr><td>C</td><td>Toggle crop mode</td></tr>
+      <tr><td>Del</td><td>Delete current tuple</td></tr>
       <tr><td>Esc</td><td>Reset zoom (2x: back to start)</td></tr>
     </table>
     <div class="modal-buttons" style="margin-top: 20px;">
@@ -512,7 +631,11 @@ body {
 
 <script>
 // Version
-const VERSION = 'v0.1.1';
+const VERSION = 'v0.1.7';
+
+// Debug logging - set to true to enable console diagnostics
+const DEBUG = false;
+function dbg(...args) { if (DEBUG) console.log('[ImageCompare]', ...args); }
 
 // Set version in UI
 document.getElementById('help-version').textContent = VERSION;
@@ -530,7 +653,10 @@ const modalitySelector = document.getElementById('modality-selector');
 const errorModal = document.getElementById('error-modal');
 const errorText = document.getElementById('error-text');
 const fileInput = document.getElementById('file-input');
-const thumbnail = document.getElementById('thumbnail');
+const floatingPanel = document.getElementById('floating-panel');
+const fpMinimap = document.getElementById('fp-minimap');
+const fpActions = document.getElementById('fp-actions');
+const fpCollapseBtn = document.getElementById('fp-collapse-btn');
 const thumbCanvas = document.getElementById('thumb-canvas');
 const thumbCtx = thumbCanvas.getContext('2d');
 const thumbViewport = document.getElementById('thumb-viewport');
@@ -583,6 +709,11 @@ let isMultiTupleMode = false;
 let winners = new Map();  // tupleIndex -> modalityIndex
 let votingEnabled = false;  // Only enabled in directory mode
 let rootDirHandle = null;  // Directory handle for saving results.txt (File System Access API)
+let modalityDirHandles = new Map();  // modalityName -> FileSystemDirectoryHandle
+let pollTimer = null;  // Interval ID for file polling
+
+// Crop tool state
+let cropMode = false;
 
 // Thumbnail cache: Map of File object -> canvas data URL (file-based key survives reordering)
 const thumbnailCache = new WeakMap();
@@ -597,6 +728,62 @@ const helpBtn = document.getElementById('help-btn');
 
 helpBtn.addEventListener('click', () => {
   helpModal.classList.add('active');
+});
+
+const cropBtn = document.getElementById('crop-btn');
+const deleteBtn = document.getElementById('delete-btn');
+
+cropBtn.addEventListener('click', () => {
+  if (cropMode) {
+    exitCropMode(true);
+  } else if (votingEnabled && isMultiTupleMode) {
+    cropBtn.classList.add('active');
+    enterCropMode();
+  }
+});
+
+deleteBtn.addEventListener('click', () => {
+  if (votingEnabled && isMultiTupleMode && !cropMode) {
+    deleteTupleFiles();
+  }
+});
+
+// Floating panel drag and collapse
+let fpDragging = false;
+let fpDragStartX = 0, fpDragStartY = 0;
+let fpDragStartLeft = 0, fpDragStartTop = 0;
+let fpDragMoved = false;
+
+document.getElementById('fp-header').addEventListener('mousedown', (e) => {
+  fpDragging = true;
+  fpDragMoved = false;
+  fpDragStartX = e.clientX;
+  fpDragStartY = e.clientY;
+  const rect = floatingPanel.getBoundingClientRect();
+  fpDragStartLeft = rect.left;
+  fpDragStartTop = rect.top;
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!fpDragging) return;
+  const dx = e.clientX - fpDragStartX;
+  const dy = e.clientY - fpDragStartY;
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) fpDragMoved = true;
+  if (fpDragMoved) {
+    floatingPanel.style.right = 'auto';
+    floatingPanel.style.left = (fpDragStartLeft + dx) + 'px';
+    floatingPanel.style.top = (fpDragStartTop + dy) + 'px';
+  }
+});
+
+document.addEventListener('mouseup', () => {
+  if (fpDragging && !fpDragMoved) {
+    // Click without drag = toggle collapse
+    floatingPanel.classList.toggle('collapsed');
+    fpCollapseBtn.textContent = floatingPanel.classList.contains('collapsed') ? '\u25b8' : '\u25be';
+  }
+  fpDragging = false;
 });
 
 function closeHelpModal() {
@@ -807,10 +994,12 @@ async function handleSingleDirectoryModern(dirHandle) {
 
   // Read files from each subdirectory
   const filesByDir = new Map();
+  modalityDirHandles = new Map();
   for (const subdir of subdirs) {
     const files = await readDirectoryModern(subdir);
     if (files.length > 0) {
       filesByDir.set(subdir.name, files);
+      modalityDirHandles.set(subdir.name, subdir);
     }
   }
 
@@ -828,6 +1017,9 @@ async function handleSingleDirectoryModern(dirHandle) {
 
   // Load existing winners from results.txt
   await loadResults();
+
+  // Start polling for external file changes
+  startPolling();
 }
 
 async function processSubdirectoriesAsModalities(filesByDir) {
@@ -1009,7 +1201,14 @@ async function processSubdirectoriesAsModalitiesModern(filesByDir) {
   // Log info about partial tuples
   const partialCount = tuples.filter(t => t.imageData.length < modalities.length).length;
   if (partialCount > 0) {
-    console.log(`${partialCount} tuples are missing some modalities`);
+    dbg(`${partialCount} tuples are missing some modalities`);
+  }
+  dbg('Total tuples:', tuples.length, 'Modalities:', modalities);
+  for (const t of tuples) {
+    const mods = t.imageData.map(d => d.modality);
+    if (mods.length < modalities.length) {
+      dbg('  Partial tuple:', t.name, 'has:', mods.join(', '), 'missing:', modalities.filter(m => !mods.includes(m)).join(', '));
+    }
   }
 
   isMultiTupleMode = tuples.length > 1;
@@ -1269,26 +1468,51 @@ function matchTuplesWithTrie(filesByModality, modalityNames) {
     }
   }
 
+  // Build a lookup from ref basename -> ref index for exact matching
+  const refBaseToIdx = new Map();
+  for (let i = 0; i < refFiles.length; i++) {
+    refBaseToIdx.set(stripExtension(refFiles[i].name), i);
+  }
+
   // Create tuple map: refIndex -> Map(modality -> file)
   const tupleMap = new Map();
   for (let i = 0; i < refFiles.length; i++) {
     tupleMap.set(i, new Map([[refMod, refFiles[i]]]));
   }
 
-  // Track which reference files got matched (for orphan detection)
-  const matchedToRef = new Map(); // non-ref file -> refIndex
+  // Track which ref indices have at least one exact match from another modality.
+  // These are "claimed" by exact matches and should be excluded from fuzzy matching.
+  const exactMatchedRefs = new Set();
 
-  // Match files from other modalities using trie lookup
+  // Pass 1: exact matches (identical basenames across modalities, e.g. crop files)
+  for (const mod of modalityNames) {
+    if (mod === refMod) continue;
+    const files = filesByModality.get(mod) || [];
+    for (const file of files) {
+      const query = stripExtension(file.name);
+      const exactIdx = refBaseToIdx.get(query);
+      if (exactIdx !== undefined) {
+        tupleMap.get(exactIdx).set(mod, file);
+        exactMatchedRefs.add(exactIdx);
+      }
+    }
+  }
+
+  dbg('Two-pass matching:', exactMatchedRefs.size, 'exact matches,', refFiles.length - exactMatchedRefs.size, 'remaining for fuzzy');
+
+  // Pass 2: fuzzy matches via trie (for files without exact ref match)
   for (const mod of modalityNames) {
     if (mod === refMod) continue;
 
     const files = filesByModality.get(mod) || [];
     for (const file of files) {
       const query = stripExtension(file.name);
+      // Skip if already matched exactly in pass 1
+      if (refBaseToIdx.has(query)) continue;
 
       // Walk trie to find deepest matching node (longest common prefix)
       let node = trie;
-      let bestNode = trie;  // Track deepest node with indices
+      let bestNode = trie;
 
       for (const char of query) {
         if (!node.children.has(char)) break;
@@ -1298,24 +1522,25 @@ function matchTuplesWithTrie(filesByModality, modalityNames) {
         }
       }
 
-      const candidates = bestNode.indices;
-      if (candidates.length === 0) {
-        // No match found - skip (shouldn't happen with valid trie)
-        continue;
-      }
+      // Prefer unclaimed refs, but fall back to all candidates if all are claimed
+      let candidates = bestNode.indices.filter(i => !exactMatchedRefs.has(i));
+      if (candidates.length === 0) candidates = bestNode.indices;
+      if (candidates.length === 0) continue;
 
       // Find best match among candidates
       let bestIdx = candidates[0];
 
       if (candidates.length > 1) {
-        // Tie-breaker: use LCS (longest common subsequence)
-        // Files with more characters in common (even non-contiguous) score higher
-        let bestScore = -1;
+        // Tie-breaker: prefer shorter length difference, then LCS score
+        let bestLenDiff = Infinity;
+        let bestLcs = -1;
         for (const idx of candidates) {
           const refName = stripExtension(refFiles[idx].name);
+          const lenDiff = Math.abs(refName.length - query.length);
           const score = lcsLength(query, refName);
-          if (score > bestScore) {
-            bestScore = score;
+          if (lenDiff < bestLenDiff || (lenDiff === bestLenDiff && score > bestLcs)) {
+            bestLenDiff = lenDiff;
+            bestLcs = score;
             bestIdx = idx;
           }
         }
@@ -1359,6 +1584,284 @@ async function readDirectoryModern(dirHandle) {
     }
   }
   return files;
+}
+
+// File polling - periodically re-scan directories for external changes
+const POLL_INTERVAL = 2000; // ms
+
+function startPolling() {
+  stopPolling();
+  if (!votingEnabled || modalityDirHandles.size === 0) return;
+  dbg('Starting file polling');
+  pollTimer = setInterval(() => pollDirectories(), POLL_INTERVAL);
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+    dbg('Stopped file polling');
+  }
+}
+
+let isPolling = false;  // Guard against concurrent polls
+
+async function pollDirectories() {
+  if (isPolling || !votingEnabled || modalityDirHandles.size === 0) return;
+  isPolling = true;
+
+  try {
+    // Re-read all modality directories
+    const filesByDir = new Map();
+    for (const [modName, dirHandle] of modalityDirHandles) {
+      const files = await readDirectoryModern(dirHandle);
+      if (files.length > 0) {
+        filesByDir.set(modName, files);
+      }
+    }
+
+    if (filesByDir.size < 2) {
+      isPolling = false;
+      return;
+    }
+
+    // Build a fingerprint of current state (sorted filenames per modality)
+    const currentFingerprint = buildFingerprint(tuples, modalities);
+
+    // Re-run tuple matching
+    const sortedModalities = Array.from(filesByDir.keys()).sort();
+
+    // Wrap files for matching (same format as processSubdirectoriesAsModalitiesModern)
+    const filesByModality = new Map();
+    for (const mod of sortedModalities) {
+      const files = filesByDir.get(mod);
+      filesByModality.set(mod, files.map(fd => ({
+        ...fd.file,
+        name: fd.name,
+        _originalFile: fd.file
+      })));
+    }
+
+    const matchedTuples = matchTuplesWithTrie(filesByModality, sortedModalities);
+
+    // Build new tuples
+    const newTuples = [];
+    for (const matched of matchedTuples) {
+      const tupleImages = [];
+      const names = [];
+      for (const mod of sortedModalities) {
+        const fileData = matched.files.get(mod);
+        if (fileData) {
+          tupleImages.push({
+            file: fileData._originalFile || fileData,
+            modality: mod
+          });
+          names.push(fileData.name);
+        }
+      }
+      if (tupleImages.length > 0) {
+        const tupleName = findCommonSubstring(names) || matched.key;
+        newTuples.push({ name: tupleName, imageData: tupleImages });
+      }
+    }
+
+    // Build fingerprint for new state
+    const newFingerprint = buildFingerprintFromTuples(newTuples, sortedModalities);
+
+    if (currentFingerprint === newFingerprint) {
+      isPolling = false;
+      return;  // No changes
+    }
+
+    dbg('Poll detected changes, updating state');
+    dbg('Old tuples:', tuples.length, '-> New tuples:', newTuples.length);
+
+    // Remap winners by tuple name
+    const winnersByName = new Map();
+    for (const [tIdx, mIdx] of winners) {
+      if (tuples[tIdx]) {
+        winnersByName.set(tuples[tIdx].name, modalities[mIdx]);
+      }
+    }
+
+    // Check if modalities changed
+    const modalitiesChanged = JSON.stringify(modalities) !== JSON.stringify(sortedModalities);
+    if (modalitiesChanged) {
+      modalities = sortedModalities;
+      modalityColors = modalities.map((_, i) => MODALITY_COLORS[i % MODALITY_COLORS.length]);
+      updateCarouselThumbSize();
+    }
+
+    tuples = newTuples;
+
+    // Restore winners by name
+    winners = new Map();
+    for (let i = 0; i < tuples.length; i++) {
+      const winnerName = winnersByName.get(tuples[i].name);
+      if (winnerName) {
+        const mIdx = modalities.indexOf(winnerName);
+        if (mIdx !== -1) winners.set(i, mIdx);
+      }
+    }
+
+    // Clear preloaded tuples (file references may have changed)
+    for (const [_, imgs] of preloadedTuples.entries()) {
+      if (imgs) imgs.forEach(img => { if (img && img.url) URL.revokeObjectURL(img.url); });
+    }
+    preloadedTuples.clear();
+
+    // Adjust current tuple index
+    isMultiTupleMode = tuples.length > 1;
+    if (currentTupleIndex >= tuples.length) {
+      currentTupleIndex = Math.max(0, tuples.length - 1);
+    }
+
+    if (tuples.length === 0) {
+      // All tuples gone - return to dropzone
+      stopPolling();
+      resetToDropzone();
+    } else {
+      // Rebuild carousel and reload current tuple
+      buildCarousel();
+      await loadTuple(currentTupleIndex);
+    }
+  } catch (err) {
+    dbg('Poll error:', err);
+  }
+
+  isPolling = false;
+}
+
+function buildFingerprint(currentTuples, currentModalities) {
+  const parts = [];
+  for (const tuple of currentTuples) {
+    const files = [];
+    for (const imgData of tuple.imageData) {
+      files.push(`${imgData.modality}:${imgData.file.name}:${imgData.file.size}`);
+    }
+    files.sort();
+    parts.push(tuple.name + '|' + files.join(','));
+  }
+  parts.sort();
+  return currentModalities.join('/') + '::' + parts.join(';;');
+}
+
+function buildFingerprintFromTuples(newTuples, newModalities) {
+  const parts = [];
+  for (const tuple of newTuples) {
+    const files = [];
+    for (const imgData of tuple.imageData) {
+      files.push(`${imgData.modality}:${imgData.file.name}:${imgData.file.size}`);
+    }
+    files.sort();
+    parts.push(tuple.name + '|' + files.join(','));
+  }
+  parts.sort();
+  return newModalities.join('/') + '::' + parts.join(';;');
+}
+
+// Delete current tuple's files
+async function deleteTupleFiles() {
+  if (!votingEnabled || !isMultiTupleMode) return;
+
+  const tuple = tuples[currentTupleIndex];
+  if (!tuple) return;
+
+  dbg('Deleting tuple', currentTupleIndex, tuple.name);
+
+  // Pause polling to avoid races with file deletion
+  stopPolling();
+
+  // Delete files via File System Access API
+  for (const imgData of tuple.imageData) {
+    const dirHandle = modalityDirHandles.get(imgData.modality);
+    if (!dirHandle) continue;
+    try {
+      await dirHandle.removeEntry(imgData.file.name);
+      dbg('Deleted', imgData.file.name, 'from', imgData.modality);
+    } catch (err) {
+      console.warn(`Failed to delete ${imgData.file.name}:`, err);
+    }
+  }
+
+  // Remove from state immediately (don't wait for poll)
+  removeTupleFromState(currentTupleIndex);
+
+  // Resume polling
+  startPolling();
+}
+
+function removeTupleFromState(tupleIndex) {
+  tuples.splice(tupleIndex, 1);
+
+  // Clean up preloaded tuples
+  preloadedTuples.delete(tupleIndex);
+  const newPreloaded = new Map();
+  for (const [idx, imgs] of preloadedTuples) {
+    if (idx > tupleIndex) newPreloaded.set(idx - 1, imgs);
+    else if (idx < tupleIndex) newPreloaded.set(idx, imgs);
+  }
+  preloadedTuples.clear();
+  for (const [idx, imgs] of newPreloaded) preloadedTuples.set(idx, imgs);
+
+  // Re-index winners
+  const newWinners = new Map();
+  for (const [tIdx, mIdx] of winners) {
+    if (tIdx > tupleIndex) newWinners.set(tIdx - 1, mIdx);
+    else if (tIdx < tupleIndex) newWinners.set(tIdx, mIdx);
+  }
+  winners = newWinners;
+  saveResults();
+
+  // Adjust current index
+  if (currentTupleIndex >= tuples.length) {
+    currentTupleIndex = Math.max(0, tuples.length - 1);
+  }
+
+  isMultiTupleMode = tuples.length > 1;
+
+  if (tuples.length > 0) {
+    buildCarousel();
+    loadTuple(currentTupleIndex);
+  } else {
+    resetToDropzone();
+  }
+}
+
+function resetToDropzone() {
+  images.forEach(img => { if (img && img.url) URL.revokeObjectURL(img.url); });
+  images = [];
+  tuples = [];
+  modalities = [];
+  modalityColors = [];
+  isMultiTupleMode = false;
+  currentModalityIndex = 0;
+  previousModalityIndex = 0;
+  currentTupleIndex = 0;
+  isReset = false;
+  winners = new Map();
+  votingEnabled = false;
+  rootDirHandle = null;
+  modalityDirHandles = new Map();
+  stopPolling();
+  if (cropMode) exitCropMode(true);
+  viewer.classList.remove('active');
+  dropzone.classList.remove('hidden');
+  info.classList.add('hidden');
+  floatingPanel.classList.remove('active');
+  floatingPanel.classList.remove('collapsed');
+  floatingPanel.style.right = '10px';
+  floatingPanel.style.left = '';
+  floatingPanel.style.top = '10px';
+  fpCollapseBtn.textContent = '\u25be';
+  carousel.classList.remove('active');
+  carouselResize.classList.remove('active');
+  carousel.innerHTML = '';
+  progressContainer.classList.remove('active');
+  for (const [_, imgs] of preloadedTuples.entries()) {
+    if (imgs) imgs.forEach(img => { if (img && img.url) URL.revokeObjectURL(img.url); });
+  }
+  preloadedTuples.clear();
 }
 
 // Winner voting functions
@@ -1668,54 +2171,58 @@ async function loadTuple(index) {
   currentTupleIndex = index;
   const tuple = tuples[index];
 
-  try {
-    // Build a map of modality -> imageData for this tuple
-    const imageDataByModality = new Map();
-    for (const imgData of tuple.imageData) {
-      imageDataByModality.set(imgData.modality, imgData);
-    }
+  // Build a map of modality -> imageData for this tuple
+  const imageDataByModality = new Map();
+  for (const imgData of tuple.imageData) {
+    imageDataByModality.set(imgData.modality, imgData);
+  }
 
-    // Load images into an array indexed by modality position
-    // Missing modalities will be undefined
-    const loadedImages = await Promise.all(
-      modalities.map(async (modalityName) => {
-        const imgData = imageDataByModality.get(modalityName);
-        if (!imgData) {
-          return undefined;  // Missing modality
-        }
+  // Load images into an array indexed by modality position
+  // Missing modalities will be undefined
+  const loadedImages = await Promise.all(
+    modalities.map(async (modalityName) => {
+      const imgData = imageDataByModality.get(modalityName);
+      if (!imgData) {
+        return undefined;  // Missing modality
+      }
+      try {
         const loaded = await loadImage(imgData.file);
         loaded.modality = modalityName;
         return loaded;
-      })
-    );
-
-    // Check aspect ratios for available images
-    const availableImages = loadedImages.filter(img => img !== undefined);
-    if (availableImages.length > 0) {
-      const aspects = availableImages.map(img => img.width / img.height);
-      const baseAspect = aspects[0];
-      const tolerance = 0.01;
-
-      const mismatch = aspects.find((a, i) =>
-        i > 0 && Math.abs(a - baseAspect) / Math.max(a, baseAspect) > tolerance
-      );
-
-      if (mismatch !== undefined) {
-        console.warn(`Aspect ratio mismatch in tuple ${index + 1}`);
-        const details = availableImages.map(img =>
-          `${img.modality}: ${img.width}×${img.height}`
-        ).join(', ');
-        console.warn(details);
+      } catch (err) {
+        dbg('Failed to load image for modality', modalityName, ':', err.message);
+        return undefined;  // Treat as missing
       }
-    }
+    })
+  );
 
-    activateViewer(loadedImages, tuple.name, preservedModalityIndex);
-
-    // Trigger preloading of nearby tuples
-    triggerPreload(index);
-  } catch (err) {
-    alert('Error loading tuple: ' + err.message);
+  // Check aspect ratios for available images
+  const availableImages = loadedImages.filter(img => img !== undefined);
+  if (availableImages.length === 0) {
+    dbg('No images could be loaded for tuple', index);
+    return;
   }
+
+  const aspects = availableImages.map(img => img.width / img.height);
+  const baseAspect = aspects[0];
+  const tolerance = 0.01;
+
+  const mismatch = aspects.find((a, i) =>
+    i > 0 && Math.abs(a - baseAspect) / Math.max(a, baseAspect) > tolerance
+  );
+
+  if (mismatch !== undefined) {
+    console.warn(`Aspect ratio mismatch in tuple ${index + 1}`);
+    const details = availableImages.map(img =>
+      `${img.modality}: ${img.width}×${img.height}`
+    ).join(', ');
+    console.warn(details);
+  }
+
+  activateViewer(loadedImages, tuple.name, preservedModalityIndex);
+
+  // Trigger preloading of nearby tuples
+  triggerPreload(index);
 }
 
 function handleFiles(files) {
@@ -1985,6 +2492,7 @@ function activateViewer(loadedImages, tupleName, preserveModalityIndex = -1) {
   dropzone.classList.add('hidden');
   viewer.classList.add('active');
   info.classList.remove('hidden');
+  floatingPanel.classList.add('active');
 
   // Build modality selector buttons
   buildModalitySelector();
@@ -2063,6 +2571,13 @@ window.addEventListener('resize', () => {
 
 function buildModalitySelector() {
   modalitySelector.innerHTML = '';
+
+  // Show/hide crop and delete actions in floating panel based on voting mode
+  if (votingEnabled && isMultiTupleMode) {
+    fpActions.classList.remove('hidden');
+  } else {
+    fpActions.classList.add('hidden');
+  }
 
   // Build buttons for all modalities (index = display position)
   modalities.forEach((modalityName, idx) => {
@@ -2508,8 +3023,10 @@ function render() {
       const centerOffsetX = carouselOffset / 2;
       canvas.style.transform = `translate(calc(-50% + ${centerOffsetX}px), -50%)`;
 
-      // Hide thumbnail navigator
-      thumbnail.classList.remove('active');
+      // Clear minimap preview (no image to show)
+      thumbCanvas.width = 0;
+      thumbCanvas.height = 0;
+      thumbViewport.style.display = 'none';
     });
     return;
   }
@@ -2549,18 +3066,17 @@ function render() {
 
     // Update thumbnail
     renderThumbnail(img, width, height, vw, vh, baseScale);
+
+    // Update crop overlay if active
+    if (cropMode) {
+      const vp = getCropViewport();
+      if (vp) renderCropOverlay(vp);
+    }
   });
 }
 
 function renderThumbnail(img, imgW, imgH, viewerW, viewerH, baseScale) {
-  // Only show thumbnail when zoomed in
-  if (zoom <= 1.05) {
-    thumbnail.classList.remove('active');
-    return;
-  }
-  thumbnail.classList.add('active');
-
-  // Calculate thumbnail size
+  // Always render the preview thumbnail
   const thumbScale = Math.min(THUMB_MAX_SIZE / imgW, THUMB_MAX_SIZE / imgH);
   const thumbW = Math.round(imgW * thumbScale);
   const thumbH = Math.round(imgH * thumbScale);
@@ -2569,30 +3085,531 @@ function renderThumbnail(img, imgW, imgH, viewerW, viewerH, baseScale) {
   thumbCanvas.height = thumbH;
   thumbCtx.drawImage(img, 0, 0, thumbW, thumbH);
 
-  // Calculate viewport rectangle
-  const scale = baseScale * zoom;
-  const visibleW = viewerW / scale;
-  const visibleH = viewerH / scale;
+  // Show viewport rectangle only when zoomed in
+  const canvasOffsetX = thumbCanvas.offsetLeft;
+  if (zoom <= 1.05) {
+    thumbViewport.style.display = 'none';
+  } else {
+    thumbViewport.style.display = 'block';
 
-  // Center of view in image coordinates (accounting for pan)
-  const centerX = imgW / 2 - panX / scale;
-  const centerY = imgH / 2 - panY / scale;
+    const scale = baseScale * zoom;
+    const visibleW = viewerW / scale;
+    const visibleH = viewerH / scale;
 
-  // Viewport bounds in image coordinates
-  const vpLeft = centerX - visibleW / 2;
-  const vpTop = centerY - visibleH / 2;
+    const centerX = imgW / 2 - panX / scale;
+    const centerY = imgH / 2 - panY / scale;
 
-  // Convert to thumbnail coordinates
-  const vpX = vpLeft * thumbScale;
-  const vpY = vpTop * thumbScale;
-  const vpW = visibleW * thumbScale;
-  const vpH = visibleH * thumbScale;
+    const vpLeft = centerX - visibleW / 2;
+    const vpTop = centerY - visibleH / 2;
 
-  // Position the viewport indicator
-  thumbViewport.style.left = (4 + Math.max(0, vpX)) + 'px';
-  thumbViewport.style.top = (4 + Math.max(0, vpY)) + 'px';
-  thumbViewport.style.width = Math.min(vpW, thumbW - Math.max(0, vpX)) + 'px';
-  thumbViewport.style.height = Math.min(vpH, thumbH - Math.max(0, vpY)) + 'px';
+    const vpX = vpLeft * thumbScale;
+    const vpY = vpTop * thumbScale;
+    const vpW = visibleW * thumbScale;
+    const vpH = visibleH * thumbScale;
+
+    thumbViewport.style.left = (canvasOffsetX + Math.max(0, vpX)) + 'px';
+    thumbViewport.style.top = Math.max(0, vpY) + 'px';
+    thumbViewport.style.width = Math.min(vpW, thumbW - Math.max(0, vpX)) + 'px';
+    thumbViewport.style.height = Math.min(vpH, thumbH - Math.max(0, vpY)) + 'px';
+  }
+}
+
+// =========================================================================
+// Crop Tool
+// =========================================================================
+
+const CROP_HANDLE_SIZE = 10;
+const MIN_CROP_PX = 4;
+
+let cropRect = null;  // {x, y, w, h} in image pixels
+let cropOverlayEl = null;
+let cropRectEl = null;
+let cropToolbarEl = null;
+let cropDimEls = [];
+let cropHandleEls = new Map();
+let cropIsDrawing = false;
+let cropIsMoving = false;
+let cropIsResizing = false;
+let cropActiveHandle = null;
+let cropDrawStartImg = null;
+let cropMoveStartImg = null;
+let cropMoveStartRect = null;
+
+function getCropViewport() {
+  const currentImage = images[currentModalityIndex];
+  if (!currentImage) return null;
+  const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+  return {
+    viewerEl: viewer,
+    zoom, panX, panY,
+    imgW: currentImage.width,
+    imgH: currentImage.height,
+    carouselOffset
+  };
+}
+
+function getCropBaseScale(vp) {
+  const rect = vp.viewerEl.getBoundingClientRect();
+  const vw = rect.width - vp.carouselOffset;
+  const vh = rect.height;
+  return Math.min(vw / vp.imgW, vh / vp.imgH);
+}
+
+function screenToImage(screenX, screenY, vp) {
+  const rect = vp.viewerEl.getBoundingClientRect();
+  const vw = rect.width - vp.carouselOffset;
+  const vh = rect.height;
+  const displayScale = getCropBaseScale(vp) * vp.zoom;
+
+  const viewerCenterX = rect.left + vp.carouselOffset + vw / 2;
+  const viewerCenterY = rect.top + vh / 2;
+
+  const imageX = (screenX - viewerCenterX - vp.panX) / displayScale + vp.imgW / 2;
+  const imageY = (screenY - viewerCenterY - vp.panY) / displayScale + vp.imgH / 2;
+
+  return {
+    x: Math.max(0, Math.min(vp.imgW, Math.round(imageX))),
+    y: Math.max(0, Math.min(vp.imgH, Math.round(imageY)))
+  };
+}
+
+function imageToScreen(imgX, imgY, vp) {
+  const rect = vp.viewerEl.getBoundingClientRect();
+  const vw = rect.width - vp.carouselOffset;
+  const vh = rect.height;
+  const displayScale = getCropBaseScale(vp) * vp.zoom;
+
+  const viewerCenterX = rect.left + vp.carouselOffset + vw / 2;
+  const viewerCenterY = rect.top + vh / 2;
+
+  return {
+    x: (imgX - vp.imgW / 2) * displayScale + vp.panX + viewerCenterX,
+    y: (imgY - vp.imgH / 2) * displayScale + vp.panY + viewerCenterY
+  };
+}
+
+function getCursorForHandle(id) {
+  const map = {
+    nw: 'nw-resize', n: 'n-resize', ne: 'ne-resize', e: 'e-resize',
+    se: 'se-resize', s: 's-resize', sw: 'sw-resize', w: 'w-resize'
+  };
+  return map[id];
+}
+
+function createCropOverlay() {
+  cropOverlayEl = document.createElement('div');
+  cropOverlayEl.id = 'crop-overlay';
+  viewer.appendChild(cropOverlayEl);
+
+  // 4 dim regions
+  for (let i = 0; i < 4; i++) {
+    const dim = document.createElement('div');
+    dim.className = 'crop-dim';
+    dim.style.display = 'none';
+    cropOverlayEl.appendChild(dim);
+    cropDimEls.push(dim);
+  }
+
+  // Crop rectangle
+  cropRectEl = document.createElement('div');
+  cropRectEl.className = 'crop-rect';
+  cropRectEl.style.display = 'none';
+  cropOverlayEl.appendChild(cropRectEl);
+
+  // Resize handles
+  const handles = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+  for (const id of handles) {
+    const handle = document.createElement('div');
+    handle.className = 'crop-handle';
+    handle.dataset.handle = id;
+    handle.style.cursor = getCursorForHandle(id);
+    cropOverlayEl.appendChild(handle);
+    cropHandleEls.set(id, handle);
+  }
+
+  // Toolbar
+  cropToolbarEl = document.createElement('div');
+  cropToolbarEl.className = 'crop-toolbar';
+  cropToolbarEl.innerHTML = `
+    <button class="crop-toolbar-btn crop-confirm" title="Confirm crop (Enter)">&#10003; Crop</button>
+    <button class="crop-toolbar-btn crop-cancel" title="Cancel (Escape)">&#10005;</button>
+  `;
+  cropOverlayEl.appendChild(cropToolbarEl);
+
+  cropToolbarEl.querySelector('.crop-confirm').addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    confirmCrop();
+  });
+  cropToolbarEl.querySelector('.crop-cancel').addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    exitCropMode(true);
+  });
+
+  setCropHandlesVisible(false);
+  cropToolbarEl.style.display = 'none';
+}
+
+function destroyCropOverlay() {
+  if (cropOverlayEl && cropOverlayEl.parentNode) {
+    cropOverlayEl.parentNode.removeChild(cropOverlayEl);
+  }
+  cropOverlayEl = null;
+  cropRectEl = null;
+  cropToolbarEl = null;
+  cropDimEls = [];
+  cropHandleEls.clear();
+}
+
+function setCropHandlesVisible(visible) {
+  for (const el of cropHandleEls.values()) {
+    el.style.display = visible ? 'block' : 'none';
+  }
+}
+
+function enterCropMode() {
+  if (cropMode) return;
+  cropMode = true;
+  cropRect = null;
+  cropIsDrawing = false;
+  cropIsMoving = false;
+  cropIsResizing = false;
+  createCropOverlay();
+  dbg('Entered crop mode');
+}
+
+function exitCropMode(cancel) {
+  cropMode = false;
+  cropRect = null;
+  cropIsDrawing = false;
+  cropIsMoving = false;
+  cropIsResizing = false;
+  cropActiveHandle = null;
+  destroyCropOverlay();
+  cropBtn.classList.remove('active');
+  dbg('Exited crop mode', cancel ? '(cancelled)' : '');
+}
+
+async function confirmCrop() {
+  if (!cropRect || cropRect.w < MIN_CROP_PX || cropRect.h < MIN_CROP_PX) return;
+
+  dbg('Confirming crop:', cropRect);
+
+  try {
+    await saveCropFiles(cropRect);
+    exitCropMode(false);
+  } catch (err) {
+    console.error('Crop failed:', err);
+    alert('Crop failed: ' + err.message);
+  }
+}
+
+async function getNextCropNumber(dirHandle, tupleName) {
+  try {
+    const escaped = tupleName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const cropPattern = new RegExp(`^${escaped}_crop(\\d+)\\.`);
+    let maxNum = 0;
+    for await (const entry of dirHandle.values()) {
+      if (entry.kind === 'file') {
+        const match = entry.name.match(cropPattern);
+        if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+      }
+    }
+    return maxNum + 1;
+  } catch {
+    return 1;
+  }
+}
+
+async function cropImageToBlob(imageObj, rect) {
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = rect.w;
+  cropCanvas.height = rect.h;
+  const cropCtx = cropCanvas.getContext('2d');
+  cropCtx.drawImage(imageObj.img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+  return new Promise(resolve => cropCanvas.toBlob(resolve, 'image/png'));
+}
+
+async function saveCropFiles(rect) {
+  const tuple = tuples[currentTupleIndex];
+  if (!tuple) throw new Error('No current tuple');
+
+  const tupleName = tuple.name;
+
+  // Find first modality dir to determine crop number
+  const firstModality = modalities.find(m => modalityDirHandles.has(m));
+  if (!firstModality) throw new Error('No directory handles available');
+
+  const cropNum = await getNextCropNumber(modalityDirHandles.get(firstModality), tupleName);
+  const cropSuffix = `_crop${String(cropNum).padStart(2, '0')}`;
+  const outputName = `${tupleName}${cropSuffix}.png`;
+
+  dbg('Saving crop as', outputName);
+
+  let savedCount = 0;
+  for (let i = 0; i < modalities.length; i++) {
+    const img = images[i];
+    if (!img) continue;
+    const dirHandle = modalityDirHandles.get(modalities[i]);
+    if (!dirHandle) continue;
+
+    // Clamp crop rect to image bounds
+    const clampedRect = {
+      x: Math.max(0, Math.min(rect.x, img.width - 1)),
+      y: Math.max(0, Math.min(rect.y, img.height - 1)),
+      w: Math.min(rect.w, img.width - Math.max(0, rect.x)),
+      h: Math.min(rect.h, img.height - Math.max(0, rect.y))
+    };
+    if (clampedRect.w <= 0 || clampedRect.h <= 0) continue;
+
+    try {
+      const blob = await cropImageToBlob(img, clampedRect);
+      const fileHandle = await dirHandle.getFileHandle(outputName, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      savedCount++;
+      dbg('Saved crop to', modalities[i] + '/' + outputName);
+    } catch (err) {
+      console.warn(`Failed to save crop to ${modalities[i]}:`, err);
+    }
+  }
+
+  if (savedCount === 0) throw new Error('Failed to save any crop files');
+  dbg('Crop saved to', savedCount, 'modalities. Poller will detect new tuple.');
+}
+
+// Crop mouse handlers - return true if event was consumed
+function handleCropMouseDown(e) {
+  if (!cropOverlayEl) return false;
+  const vp = getCropViewport();
+  if (!vp) return false;
+
+  const target = e.target;
+
+  // Check handle
+  if (target.classList.contains('crop-handle') && target.dataset.handle) {
+    e.preventDefault();
+    e.stopPropagation();
+    cropIsResizing = true;
+    cropActiveHandle = target.dataset.handle;
+    return true;
+  }
+
+  // Check toolbar
+  if (target.closest('.crop-toolbar')) return true;
+
+  // Check inside crop rect (to move)
+  if (cropRect && cropRectEl) {
+    const screenPos = imageToScreen(cropRect.x, cropRect.y, vp);
+    const screenEnd = imageToScreen(cropRect.x + cropRect.w, cropRect.y + cropRect.h, vp);
+    const viewerRect = vp.viewerEl.getBoundingClientRect();
+    const sx = screenPos.x - viewerRect.left;
+    const sy = screenPos.y - viewerRect.top;
+    const ex = screenEnd.x - viewerRect.left;
+    const ey = screenEnd.y - viewerRect.top;
+
+    if (e.offsetX >= sx && e.offsetX <= ex && e.offsetY >= sy && e.offsetY <= ey) {
+      e.preventDefault();
+      e.stopPropagation();
+      cropIsMoving = true;
+      cropMoveStartImg = screenToImage(e.clientX, e.clientY, vp);
+      cropMoveStartRect = { ...cropRect };
+      return true;
+    }
+  }
+
+  // Start drawing new crop rectangle
+  e.preventDefault();
+  e.stopPropagation();
+  cropIsDrawing = true;
+  cropDrawStartImg = screenToImage(e.clientX, e.clientY, vp);
+  cropRect = { x: cropDrawStartImg.x, y: cropDrawStartImg.y, w: 0, h: 0 };
+  setCropHandlesVisible(false);
+  if (cropToolbarEl) cropToolbarEl.style.display = 'none';
+  return true;
+}
+
+function handleCropMouseMove(e) {
+  const vp = getCropViewport();
+  if (!vp) return false;
+
+  if (cropIsDrawing && cropDrawStartImg) {
+    e.preventDefault();
+    const imgPos = screenToImage(e.clientX, e.clientY, vp);
+    const x1 = Math.min(cropDrawStartImg.x, imgPos.x);
+    const y1 = Math.min(cropDrawStartImg.y, imgPos.y);
+    const x2 = Math.max(cropDrawStartImg.x, imgPos.x);
+    const y2 = Math.max(cropDrawStartImg.y, imgPos.y);
+    cropRect = {
+      x: Math.max(0, x1),
+      y: Math.max(0, y1),
+      w: Math.min(vp.imgW, x2) - Math.max(0, x1),
+      h: Math.min(vp.imgH, y2) - Math.max(0, y1)
+    };
+    renderCropOverlay(vp);
+    return true;
+  }
+
+  if (cropIsMoving && cropMoveStartImg && cropMoveStartRect) {
+    e.preventDefault();
+    const imgPos = screenToImage(e.clientX, e.clientY, vp);
+    const dx = imgPos.x - cropMoveStartImg.x;
+    const dy = imgPos.y - cropMoveStartImg.y;
+    let newX = cropMoveStartRect.x + dx;
+    let newY = cropMoveStartRect.y + dy;
+    newX = Math.max(0, Math.min(vp.imgW - cropMoveStartRect.w, newX));
+    newY = Math.max(0, Math.min(vp.imgH - cropMoveStartRect.h, newY));
+    cropRect = { x: Math.round(newX), y: Math.round(newY), w: cropMoveStartRect.w, h: cropMoveStartRect.h };
+    renderCropOverlay(vp);
+    return true;
+  }
+
+  if (cropIsResizing && cropActiveHandle && cropRect) {
+    e.preventDefault();
+    const imgPos = screenToImage(e.clientX, e.clientY, vp);
+    const r = { ...cropRect };
+
+    if (cropActiveHandle.includes('n')) {
+      const newTop = Math.max(0, Math.min(r.y + r.h - MIN_CROP_PX, imgPos.y));
+      r.h = r.y + r.h - newTop;
+      r.y = newTop;
+    }
+    if (cropActiveHandle.includes('s')) {
+      r.h = Math.max(MIN_CROP_PX, Math.min(vp.imgH - r.y, imgPos.y - r.y));
+    }
+    if (cropActiveHandle.includes('w')) {
+      const newLeft = Math.max(0, Math.min(r.x + r.w - MIN_CROP_PX, imgPos.x));
+      r.w = r.x + r.w - newLeft;
+      r.x = newLeft;
+    }
+    if (cropActiveHandle.includes('e')) {
+      r.w = Math.max(MIN_CROP_PX, Math.min(vp.imgW - r.x, imgPos.x - r.x));
+    }
+
+    cropRect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) };
+    renderCropOverlay(vp);
+    return true;
+  }
+
+  return false;
+}
+
+function handleCropMouseUp(e) {
+  const wasDrawing = cropIsDrawing;
+  const wasActive = cropIsDrawing || cropIsMoving || cropIsResizing;
+  cropIsDrawing = false;
+  cropIsMoving = false;
+  cropIsResizing = false;
+  cropActiveHandle = null;
+  cropDrawStartImg = null;
+  cropMoveStartImg = null;
+  cropMoveStartRect = null;
+
+  const vp = getCropViewport();
+
+  if (wasActive && cropRect && cropRect.w >= MIN_CROP_PX && cropRect.h >= MIN_CROP_PX) {
+    setCropHandlesVisible(true);
+    if (cropToolbarEl) cropToolbarEl.style.display = 'flex';
+    if (vp) renderCropOverlay(vp);
+  } else if (wasDrawing) {
+    cropRect = null;
+    setCropHandlesVisible(false);
+    if (cropToolbarEl) cropToolbarEl.style.display = 'none';
+    if (vp) renderCropOverlay(vp);
+  }
+  return wasActive;
+}
+
+function handleCropKeyDown(e) {
+  if (e.code === 'Enter' && cropRect && cropRect.w >= MIN_CROP_PX && cropRect.h >= MIN_CROP_PX) {
+    e.preventDefault();
+    confirmCrop();
+    return true;
+  }
+  if (e.code === 'Escape') {
+    e.preventDefault();
+    exitCropMode(true);
+    return true;
+  }
+  // Allow arrow keys for modality switching while in crop mode
+  if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') return false;
+  // Block other navigation keys
+  if (e.code === 'ArrowUp' || e.code === 'ArrowDown' || e.code === 'Space') {
+    e.preventDefault();
+    return true;
+  }
+  return false;
+}
+
+function renderCropOverlay(vp) {
+  if (!cropOverlayEl || !cropRectEl || !cropRect) {
+    if (cropOverlayEl) cropOverlayEl.style.display = cropMode ? 'block' : 'none';
+    for (const dim of cropDimEls) dim.style.display = 'none';
+    if (cropRectEl) cropRectEl.style.display = 'none';
+    setCropHandlesVisible(false);
+    if (cropToolbarEl) cropToolbarEl.style.display = 'none';
+    return;
+  }
+
+  cropOverlayEl.style.display = 'block';
+
+  const viewerRect = vp.viewerEl.getBoundingClientRect();
+  const topLeft = imageToScreen(cropRect.x, cropRect.y, vp);
+  const bottomRight = imageToScreen(cropRect.x + cropRect.w, cropRect.y + cropRect.h, vp);
+
+  const sx = topLeft.x - viewerRect.left;
+  const sy = topLeft.y - viewerRect.top;
+  const ex = bottomRight.x - viewerRect.left;
+  const ey = bottomRight.y - viewerRect.top;
+  const sw = ex - sx;
+  const sh = ey - sy;
+  const ow = viewerRect.width;
+  const oh = viewerRect.height;
+
+  // Dim overlays (top, bottom, left, right)
+  if (cropDimEls.length >= 4) {
+    cropDimEls[0].style.cssText = `display:block; left:0; top:0; width:${ow}px; height:${Math.max(0, sy)}px;`;
+    cropDimEls[1].style.cssText = `display:block; left:0; top:${ey}px; width:${ow}px; height:${Math.max(0, oh - ey)}px;`;
+    cropDimEls[2].style.cssText = `display:block; left:0; top:${sy}px; width:${Math.max(0, sx)}px; height:${sh}px;`;
+    cropDimEls[3].style.cssText = `display:block; left:${ex}px; top:${sy}px; width:${Math.max(0, ow - ex)}px; height:${sh}px;`;
+  }
+
+  // Crop rect
+  cropRectEl.style.display = 'block';
+  cropRectEl.style.left = sx + 'px';
+  cropRectEl.style.top = sy + 'px';
+  cropRectEl.style.width = sw + 'px';
+  cropRectEl.style.height = sh + 'px';
+
+  // Handles
+  const hs = CROP_HANDLE_SIZE;
+  const hh = hs / 2;
+  const positions = {
+    nw: { left: sx - hh, top: sy - hh },
+    n:  { left: sx + sw / 2 - hh, top: sy - hh },
+    ne: { left: ex - hh, top: sy - hh },
+    e:  { left: ex - hh, top: sy + sh / 2 - hh },
+    se: { left: ex - hh, top: ey - hh },
+    s:  { left: sx + sw / 2 - hh, top: ey - hh },
+    sw: { left: sx - hh, top: ey - hh },
+    w:  { left: sx - hh, top: sy + sh / 2 - hh }
+  };
+
+  for (const [id, el] of cropHandleEls) {
+    const pos = positions[id];
+    el.style.left = pos.left + 'px';
+    el.style.top = pos.top + 'px';
+    el.style.width = hs + 'px';
+    el.style.height = hs + 'px';
+  }
+
+  // Toolbar below crop rect
+  if (cropToolbarEl && cropToolbarEl.style.display !== 'none') {
+    cropToolbarEl.style.left = (sx + sw / 2) + 'px';
+    cropToolbarEl.style.top = (ey + 8) + 'px';
+  }
 }
 
 // Keyboard controls
@@ -2605,6 +3622,9 @@ document.addEventListener('keydown', (e) => {
   }
 
   if (modalities.length === 0) return;
+
+  // Crop mode key interception
+  if (cropMode && handleCropKeyDown(e)) return;
 
   switch(e.code) {
     case 'Space':
@@ -2680,6 +3700,22 @@ document.addEventListener('keydown', (e) => {
         toggleWinner(currentTupleIndex, currentModalityIndex);
       }
       break;
+    case 'KeyC':
+      e.preventDefault();
+      if (cropMode) {
+        exitCropMode(true);
+      } else if (votingEnabled && isMultiTupleMode) {
+        cropBtn.classList.add('active');
+        enterCropMode();
+      }
+      break;
+    case 'Delete':
+    case 'Backspace':
+      e.preventDefault();
+      if (votingEnabled && isMultiTupleMode && !cropMode) {
+        deleteTupleFiles();
+      }
+      break;
     case 'KeyR':
     case 'Escape':
       if (e.code === 'Escape' && errorModal.classList.contains('active')) {
@@ -2688,34 +3724,7 @@ document.addEventListener('keydown', (e) => {
       }
       // If already reset, go back to dropzone
       if (isReset && zoom === 1 && panX === 0 && panY === 0) {
-        images.forEach(img => { if (img && img.url) URL.revokeObjectURL(img.url); });
-        images = [];
-        tuples = [];
-        modalities = [];
-        modalityColors = [];
-        isMultiTupleMode = false;
-        currentModalityIndex = 0;
-        previousModalityIndex = 0;
-        currentTupleIndex = 0;
-        isReset = false;
-        // Reset winner state
-        winners = new Map();
-        votingEnabled = false;
-        rootDirHandle = null;
-        viewer.classList.remove('active');
-        dropzone.classList.remove('hidden');
-        info.classList.add('hidden');
-        thumbnail.classList.remove('active');
-        carousel.classList.remove('active');
-        carouselResize.classList.remove('active');
-        carousel.innerHTML = '';
-        progressContainer.classList.remove('active');
-        // thumbnailCache is a WeakMap - it auto-cleans when file references are gone
-        // Clear preloaded tuples
-        for (const [_, imgs] of preloadedTuples.entries()) {
-          imgs.forEach(img => { if (img.url) URL.revokeObjectURL(img.url); });
-        }
-        preloadedTuples.clear();
+        resetToDropzone();
         break;
       }
       zoom = 1;
@@ -2757,8 +3766,11 @@ viewer.addEventListener('wheel', (e) => {
 
 // Pan with mouse drag
 viewer.addEventListener('mousedown', (e) => {
-  // Don't start drag if clicking on carousel
-  if (e.target.closest('#carousel')) return;
+  // Don't start drag if clicking on carousel or floating panel
+  if (e.target.closest('#carousel') || e.target.closest('#floating-panel')) return;
+
+  // Crop mode intercepts mouse events
+  if (cropMode && handleCropMouseDown(e)) return;
 
   isDragging = true;
   dragStartX = e.clientX - panX;
@@ -2767,6 +3779,7 @@ viewer.addEventListener('mousedown', (e) => {
 });
 
 document.addEventListener('mousemove', (e) => {
+  if (cropMode && handleCropMouseMove(e)) return;
   if (!isDragging) return;
   panX = e.clientX - dragStartX;
   panY = e.clientY - dragStartY;
@@ -2774,7 +3787,8 @@ document.addEventListener('mousemove', (e) => {
   render();
 });
 
-document.addEventListener('mouseup', () => {
+document.addEventListener('mouseup', (e) => {
+  if (cropMode) handleCropMouseUp(e);
   isDragging = false;
   viewer.classList.remove('dragging');
 });
