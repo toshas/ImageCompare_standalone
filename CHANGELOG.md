@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.8
+
+- **Crop square shortcut**: Double-click a cardinal (N/S/E/W) resize handle to make the crop rectangle square
+  - Adjusts only the clicked edge, keeping the opposite edge fixed
+  - Clamps to image boundaries when a perfect square isn't possible
+
 ## v0.1.7
 
 - **Two-pass tuple matching**: Exact basename matching (pass 1) before fuzzy trie matching (pass 2)

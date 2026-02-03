@@ -81,9 +81,17 @@ Set `const DEBUG = true;` near the top of the script to enable console diagnosti
 
 Version constant `VERSION` at top of script. Displayed in dropzone header and help modal.
 
+When bumping the version, update all three files:
+1. `image_compare.html` — `const VERSION = 'v0.X.Y';`
+2. `CHANGELOG.md` — add new section at top
+3. `CLAUDE.md` — add entry in the changelog section below
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
+
+### v0.1.8
+- Crop square shortcut: double-click cardinal resize handle to make crop square
 
 ### v0.1.7
 - Two-pass tuple matching (exact + fuzzy) for correct crop file grouping
