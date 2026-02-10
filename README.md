@@ -1,16 +1,21 @@
 # Image Compare
 
-A standalone HTML tool for comparing multiple images (modalities) side-by-side with synchronized zoom and pan.
+A standalone single-file HTML tool for comparing multiple images (modalities) with synchronized zoom and pan.
 
 ## Features
 
 - **Multi-modality comparison**: Compare 2+ images with instant switching via keyboard or clicks
 - **Multi-tuple mode**: Load a folder with subdirectories (each subdirectory = one modality) to browse multiple image sets
-- **Prefix-based matching**: Automatically matches images across modalities by filename prefix (e.g., `001_modA.png` matches `001_modB.png`)
+- **Smart matching**: Two-pass trie-based algorithm matches images across modalities by filename, even with different suffixes
 - **Synchronized viewing**: Zoom and pan are preserved when switching between modalities
-- **Thumbnail carousel**: Visual navigation for multi-tuple mode with placeholder support for missing images
+- **Thumbnail carousel**: Visual navigation with placeholder support for missing images
 - **Spacebar flip**: Hold spacebar to temporarily view previous modality (release to flip back)
+- **Crop tool**: Draw a rectangle to crop all modalities at the same coordinates, saved as `_cropNN.png` files
+- **Winner voting**: Mark the best modality per tuple, persisted to `results.txt`
+- **PowerPoint export**: Export voted tuples to `.pptx` with caption bars and crop callout overlays
+- **Live file polling**: Automatically detects new files, deletions, and renames every 2 seconds
 - **PPMX support**: Custom float32 grayscale format used in some imaging workflows
+- **Fully offline**: Zero external dependencies for core functionality (PPTX export lazy-loads pptxgenjs from CDN)
 
 ## Usage
 
@@ -29,8 +34,11 @@ A standalone HTML tool for comparing multiple images (modalities) side-by-side w
 | `Space` | Flip to previous modality (hold) |
 | `1-9` | Jump to modality N |
 | `[ ]` | Reorder current modality left/right |
+| `Enter` | Toggle winner for current modality |
 | `Scroll` | Zoom in/out |
 | `Drag` | Pan image |
+| `C` | Toggle crop mode |
+| `Del` | Delete current tuple files |
 | `Esc` | Reset zoom (press twice to return to start screen) |
 
 ## Folder Structure for Multi-Tuple Mode
@@ -50,16 +58,14 @@ my_images/
     └── 003_another.png  # 002 missing - will show placeholder
 ```
 
-Images are matched by their leading numeric or alphanumeric prefix. Missing images in some modalities are handled gracefully with placeholder thumbnails.
+Images are matched across modalities using a two-pass algorithm (exact basenames first, then fuzzy trie-based matching). Missing images are handled gracefully with placeholder thumbnails.
 
 ## Browser Compatibility
 
-- Chrome/Chromium (recommended)
+- Chrome/Chromium (recommended — required for File System Access API features: crop, delete, voting, PPTX export)
 - Firefox
 - Safari
 - Edge
-
-Requires modern browser features: `createImageBitmap`, `OffscreenCanvas` (optional), File System Access API (for folder drops).
 
 ## License
 

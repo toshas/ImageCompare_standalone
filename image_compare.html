@@ -110,6 +110,7 @@ body {
   border: 2px solid #f0f;
   pointer-events: none;
   box-sizing: border-box;
+  display: none;
 }
 #fp-actions {
   display: flex;
@@ -474,7 +475,7 @@ body {
 .btn:hover { opacity: 0.9; }
 
 /* Crop / Delete buttons in floating panel */
-#crop-btn, #delete-btn {
+#crop-btn, #delete-btn, #pptx-btn {
   padding: 3px 8px;
   background: #444;
   color: #fff;
@@ -486,6 +487,8 @@ body {
 #crop-btn:hover { background: #555; }
 #crop-btn.active { background: #0af; color: #000; }
 #delete-btn:hover { background: #a33; }
+#pptx-btn:hover { background: #383; }
+#pptx-btn.exporting { background: #a80; color: #fff; cursor: wait; }
 
 /* Crop overlay */
 #crop-overlay {
@@ -572,12 +575,13 @@ body {
     </div>
     <div id="fp-body">
       <div id="fp-minimap">
-        <canvas id="thumb-canvas"></canvas>
+        <canvas id="thumb-canvas" width="160" height="100"></canvas>
         <div id="thumb-viewport"></div>
       </div>
       <div id="fp-actions">
         <button id="crop-btn" title="Crop all modalities (C)">Crop</button>
         <button id="delete-btn" title="Delete current tuple files (Del)">Delete</button>
+        <button id="pptx-btn" title="Export voted tuples to PPTX">PPTX</button>
       </div>
     </div>
   </div>
@@ -631,7 +635,7 @@ body {
 
 <script>
 // Version
-const VERSION = 'v0.1.8';
+const VERSION = 'v0.2.1';
 
 // Debug logging - set to true to enable console diagnostics
 const DEBUG = false;
@@ -715,8 +719,9 @@ let pollTimer = null;  // Interval ID for file polling
 // Crop tool state
 let cropMode = false;
 
-// Thumbnail cache: Map of File object -> canvas data URL (file-based key survives reordering)
-const thumbnailCache = new WeakMap();
+// Thumbnail cache: keyed by "modality/filename" string so it survives poller re-reads
+// (WeakMap<File> fails because polling creates new File objects for the same files)
+const thumbnailCache = new Map();
 
 // Preloaded tuples cache: Map of tupleIdx -> loaded images array
 const preloadedTuples = new Map();
@@ -732,6 +737,7 @@ helpBtn.addEventListener('click', () => {
 
 const cropBtn = document.getElementById('crop-btn');
 const deleteBtn = document.getElementById('delete-btn');
+const pptxBtn = document.getElementById('pptx-btn');
 
 cropBtn.addEventListener('click', () => {
   if (cropMode) {
@@ -745,6 +751,12 @@ cropBtn.addEventListener('click', () => {
 deleteBtn.addEventListener('click', () => {
   if (votingEnabled && isMultiTupleMode && !cropMode) {
     deleteTupleFiles();
+  }
+});
+
+pptxBtn.addEventListener('click', () => {
+  if (votingEnabled && isMultiTupleMode && !cropMode) {
+    exportPptx();
   }
 });
 
@@ -1531,16 +1543,23 @@ function matchTuplesWithTrie(filesByModality, modalityNames) {
       let bestIdx = candidates[0];
 
       if (candidates.length > 1) {
-        // Tie-breaker: prefer shorter length difference, then LCS score
+        // Tie-breaker: prefer non-crop refs, then shorter length difference, then LCS score
+        const cropSuffixRe = /_crop\d+$/;
         let bestLenDiff = Infinity;
         let bestLcs = -1;
+        let bestIsCrop = true;
         for (const idx of candidates) {
           const refName = stripExtension(refFiles[idx].name);
+          const isCrop = cropSuffixRe.test(refName);
           const lenDiff = Math.abs(refName.length - query.length);
-          const score = lcsLength(query, refName);
-          if (lenDiff < bestLenDiff || (lenDiff === bestLenDiff && score > bestLcs)) {
+          const lcs = lcsLength(query, refName);
+          const isBetter = (!isCrop && bestIsCrop) ||
+            (isCrop === bestIsCrop && lenDiff < bestLenDiff) ||
+            (isCrop === bestIsCrop && lenDiff === bestLenDiff && lcs > bestLcs);
+          if (isBetter) {
             bestLenDiff = lenDiff;
-            bestLcs = score;
+            bestLcs = lcs;
+            bestIsCrop = isCrop;
             bestIdx = idx;
           }
         }
@@ -1862,6 +1881,7 @@ function resetToDropzone() {
     if (imgs) imgs.forEach(img => { if (img && img.url) URL.revokeObjectURL(img.url); });
   }
   preloadedTuples.clear();
+  thumbnailCache.clear();
 }
 
 // Winner voting functions
@@ -2733,7 +2753,8 @@ async function buildCarousel() {
   let cachedCount = 0;
   for (const tuple of tuples) {
     for (const imgData of tuple.imageData) {
-      if (thumbnailCache.has(imgData.file)) cachedCount++;
+      const cacheKey = imgData.modality + '/' + imgData.file.name;
+      if (thumbnailCache.has(cacheKey)) cachedCount++;
     }
   }
 
@@ -2781,14 +2802,15 @@ async function buildCarousel() {
         thumb.dataset.modality = modalityName;
 
         const file = imgData.file;
+        const cacheKey = modalityName + '/' + file.name;
 
         // If cached, set immediately
-        if (thumbnailCache.has(file)) {
-          thumb.src = thumbnailCache.get(file);
+        if (thumbnailCache.has(cacheKey)) {
+          thumb.src = thumbnailCache.get(cacheKey);
           loadedThumbs++;
         } else {
           // Queue for sequential generation
-          thumbElements.push({ thumb, file, tupleIdx, modIdx });
+          thumbElements.push({ thumb, file, tupleIdx, modIdx, cacheKey });
         }
 
         // Click handler
@@ -2861,13 +2883,13 @@ async function buildCarousel() {
   // Generate uncached thumbnails sequentially (top to bottom)
   // Yield after each thumbnail to keep UI responsive during zoom/pan
   async function generateThumbnailsSequentially() {
-    for (const { thumb, file, tupleIdx, modIdx } of thumbElements) {
+    for (const { thumb, file, tupleIdx, modIdx, cacheKey } of thumbElements) {
       // Yield before each thumbnail to allow UI updates
       await new Promise(resolve => setTimeout(resolve, 0));
 
       try {
         const dataUrl = await generateThumbnail(file, CAROUSEL_THUMB_SIZE * 2);
-        thumbnailCache.set(file, dataUrl);
+        thumbnailCache.set(cacheKey, dataUrl);
         thumb.src = dataUrl;
         loadedThumbs++;
 
@@ -3322,13 +3344,100 @@ async function getNextCropNumber(dirHandle, tupleName) {
   }
 }
 
+// PNG tEXt chunk injection/reading for crop metadata
+function pngCrc32(buf) {
+  // CRC-32 lookup table
+  if (!pngCrc32._table) {
+    pngCrc32._table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      pngCrc32._table[n] = c;
+    }
+  }
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) crc = pngCrc32._table[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function pngInjectText(pngBytes, keyword, value) {
+  const enc = new TextEncoder();
+  const keyBuf = enc.encode(keyword);
+  const valBuf = enc.encode(value);
+  const dataLen = keyBuf.length + 1 + valBuf.length; // +1 for null separator
+  const typeAndData = new Uint8Array(4 + dataLen);
+  typeAndData.set(enc.encode('tEXt'), 0);
+  typeAndData.set(keyBuf, 4);
+  typeAndData[4 + keyBuf.length] = 0; // null separator
+  typeAndData.set(valBuf, 4 + keyBuf.length + 1);
+  const crc = pngCrc32(typeAndData);
+  // Build chunk: 4-byte length + type+data + 4-byte CRC
+  const chunk = new Uint8Array(12 + dataLen);
+  new DataView(chunk.buffer).setUint32(0, dataLen, false);
+  chunk.set(typeAndData, 4);
+  new DataView(chunk.buffer).setUint32(8 + dataLen, crc, false);
+  // Find IEND chunk
+  let iendOffset = pngBytes.length - 12;
+  let offset = 8; // skip PNG signature
+  while (offset + 8 <= pngBytes.length) {
+    const type = String.fromCharCode(pngBytes[offset+4], pngBytes[offset+5], pngBytes[offset+6], pngBytes[offset+7]);
+    if (type === 'IEND') { iendOffset = offset; break; }
+    const chunkLen = new DataView(pngBytes.buffer, pngBytes.byteOffset + offset, 4).getUint32(0, false);
+    offset += 12 + chunkLen;
+  }
+  // Concat: before IEND + tEXt chunk + IEND onward
+  const result = new Uint8Array(pngBytes.length + chunk.length);
+  result.set(pngBytes.subarray(0, iendOffset), 0);
+  result.set(chunk, iendOffset);
+  result.set(pngBytes.subarray(iendOffset), iendOffset + chunk.length);
+  return result;
+}
+
+function pngReadText(pngBytes, keyword) {
+  const enc = new TextEncoder();
+  const keyBytes = enc.encode(keyword);
+  let offset = 8; // skip PNG signature
+  while (offset + 8 <= pngBytes.length) {
+    const chunkLen = new DataView(pngBytes.buffer, pngBytes.byteOffset + offset, 4).getUint32(0, false);
+    const type = String.fromCharCode(pngBytes[offset+4], pngBytes[offset+5], pngBytes[offset+6], pngBytes[offset+7]);
+    if (type === 'tEXt') {
+      const data = pngBytes.subarray(offset + 8, offset + 8 + chunkLen);
+      // Find null separator
+      let nullIdx = -1;
+      for (let i = 0; i < data.length; i++) { if (data[i] === 0) { nullIdx = i; break; } }
+      if (nullIdx >= 0 && nullIdx === keyBytes.length) {
+        let match = true;
+        for (let i = 0; i < nullIdx; i++) { if (data[i] !== keyBytes[i]) { match = false; break; } }
+        if (match) return new TextDecoder().decode(data.subarray(nullIdx + 1));
+      }
+    }
+    if (type === 'IEND') break;
+    offset += 12 + chunkLen;
+  }
+  return null;
+}
+
+function readCropMetadata(pngBytes) {
+  const val = pngReadText(pngBytes, 'ImageCompare:CropRect');
+  if (!val) return null;
+  const parts = val.split(',').map(Number);
+  if (parts.length !== 6 || parts.some(isNaN)) return null;
+  return { x: parts[0], y: parts[1], w: parts[2], h: parts[3], srcW: parts[4], srcH: parts[5] };
+}
+
 async function cropImageToBlob(imageObj, rect) {
   const cropCanvas = document.createElement('canvas');
   cropCanvas.width = rect.w;
   cropCanvas.height = rect.h;
   const cropCtx = cropCanvas.getContext('2d');
   cropCtx.drawImage(imageObj.img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
-  return new Promise(resolve => cropCanvas.toBlob(resolve, 'image/png'));
+  const blob = await new Promise(resolve => cropCanvas.toBlob(resolve, 'image/png'));
+  // Inject crop metadata as PNG tEXt chunk
+  const cropMeta = `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.w)},${Math.round(rect.h)},${imageObj.width},${imageObj.height}`;
+  const arrayBuf = await blob.arrayBuffer();
+  const pngBytes = new Uint8Array(arrayBuf);
+  const injected = pngInjectText(pngBytes, 'ImageCompare:CropRect', cropMeta);
+  return new Blob([injected], { type: 'image/png' });
 }
 
 async function saveCropFiles(rect) {
@@ -3347,37 +3456,368 @@ async function saveCropFiles(rect) {
 
   dbg('Saving crop as', outputName);
 
-  let savedCount = 0;
-  for (let i = 0; i < modalities.length; i++) {
-    const img = images[i];
-    if (!img) continue;
-    const dirHandle = modalityDirHandles.get(modalities[i]);
-    if (!dirHandle) continue;
+  // Snapshot modalities to avoid races with poller
+  const snapshotModalities = modalities.slice();
 
-    // Clamp crop rect to image bounds
-    const clampedRect = {
-      x: Math.max(0, Math.min(rect.x, img.width - 1)),
-      y: Math.max(0, Math.min(rect.y, img.height - 1)),
-      w: Math.min(rect.w, img.width - Math.max(0, rect.x)),
-      h: Math.min(rect.h, img.height - Math.max(0, rect.y))
+  // Build modality→imageData map for the current tuple (for on-demand loading)
+  const imageDataByModality = new Map();
+  for (const imgData of tuple.imageData) {
+    imageDataByModality.set(imgData.modality, imgData);
+  }
+
+  // Snapshot images, loading any missing ones on demand
+  const snapshotImages = images.slice();
+  for (let i = 0; i < snapshotModalities.length; i++) {
+    if (!snapshotImages[i]) {
+      const imgData = imageDataByModality.get(snapshotModalities[i]);
+      if (imgData) {
+        try {
+          dbg('Crop: loading missing image for modality', snapshotModalities[i]);
+          const loaded = await loadImage(imgData.file);
+          loaded.modality = snapshotModalities[i];
+          snapshotImages[i] = loaded;
+        } catch (err) {
+          dbg('Crop: failed to load image for modality', snapshotModalities[i], ':', err.message);
+        }
+      }
+    }
+  }
+
+  // The crop rect is in pixel coords of the current modality's image.
+  // Convert to relative coords (0-1) so we can scale to each modality's resolution.
+  const srcImg = snapshotImages[currentModalityIndex];
+  if (!srcImg) throw new Error('Current modality image not loaded');
+  const relRect = {
+    x: rect.x / srcImg.width,
+    y: rect.y / srcImg.height,
+    w: rect.w / srcImg.width,
+    h: rect.h / srcImg.height
+  };
+
+  let savedCount = 0;
+  for (let i = 0; i < snapshotModalities.length; i++) {
+    const img = snapshotImages[i];
+    if (!img) {
+      dbg('Crop skip modality', snapshotModalities[i], '- no loaded image at index', i);
+      continue;
+    }
+    const dirHandle = modalityDirHandles.get(snapshotModalities[i]);
+    if (!dirHandle) {
+      dbg('Crop skip modality', snapshotModalities[i], '- no directory handle');
+      continue;
+    }
+
+    // Scale relative crop rect to this modality's pixel dimensions, clamp to bounds
+    const scaledRect = {
+      x: Math.max(0, Math.round(relRect.x * img.width)),
+      y: Math.max(0, Math.round(relRect.y * img.height)),
+      w: Math.round(relRect.w * img.width),
+      h: Math.round(relRect.h * img.height)
     };
-    if (clampedRect.w <= 0 || clampedRect.h <= 0) continue;
+    // Clamp to image bounds
+    scaledRect.w = Math.min(scaledRect.w, img.width - scaledRect.x);
+    scaledRect.h = Math.min(scaledRect.h, img.height - scaledRect.y);
+    if (scaledRect.w <= 0 || scaledRect.h <= 0) continue;
 
     try {
-      const blob = await cropImageToBlob(img, clampedRect);
+      const blob = await cropImageToBlob(img, scaledRect);
       const fileHandle = await dirHandle.getFileHandle(outputName, { create: true });
       const writable = await fileHandle.createWritable();
       await writable.write(blob);
       await writable.close();
       savedCount++;
-      dbg('Saved crop to', modalities[i] + '/' + outputName);
+      dbg('Saved crop to', snapshotModalities[i] + '/' + outputName);
     } catch (err) {
-      console.warn(`Failed to save crop to ${modalities[i]}:`, err);
+      console.warn(`Failed to save crop to ${snapshotModalities[i]}:`, err);
+    }
+  }
+
+  // Revoke blob URLs for on-demand loaded images (not in the global images array)
+  for (let i = 0; i < snapshotImages.length; i++) {
+    if (snapshotImages[i] && snapshotImages[i] !== images[i] && snapshotImages[i].url) {
+      URL.revokeObjectURL(snapshotImages[i].url);
     }
   }
 
   if (savedCount === 0) throw new Error('Failed to save any crop files');
   dbg('Crop saved to', savedCount, 'modalities. Poller will detect new tuple.');
+}
+
+// ---- PPTX Export ----
+
+let pptxGenLoaded = null; // cached PptxGenJS constructor
+
+async function loadPptxGen() {
+  if (pptxGenLoaded) return pptxGenLoaded;
+  if (typeof PptxGenJS !== 'undefined') { pptxGenLoaded = PptxGenJS; return pptxGenLoaded; }
+  // Lazy-load from CDN
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/gh/gitbrent/PptxGenJS@3.12.0/dist/pptxgen.bundle.js';
+    script.onload = () => {
+      if (typeof PptxGenJS !== 'undefined') { pptxGenLoaded = PptxGenJS; resolve(pptxGenLoaded); }
+      else reject(new Error('PptxGenJS not found after loading script'));
+    };
+    script.onerror = () => reject(new Error('Failed to load PptxGenJS library. Are you online?'));
+    document.head.appendChild(script);
+  });
+}
+
+function imageToDataURL(imageObj) {
+  const c = document.createElement('canvas');
+  c.width = imageObj.width;
+  c.height = imageObj.height;
+  c.getContext('2d').drawImage(imageObj.img, 0, 0);
+  return c.toDataURL('image/png');
+}
+
+async function exportPptx() {
+  // Collect voted tuples
+  const votedIndices = [];
+  const votedWinners = [];
+  for (let i = 0; i < tuples.length; i++) {
+    if (winners.has(i)) {
+      votedIndices.push(i);
+      votedWinners.push(winners.get(i));
+    }
+  }
+  if (votedIndices.length === 0) {
+    alert('No voted tuples to export. Use Enter to vote for a winner first.');
+    return;
+  }
+
+  pptxBtn.classList.add('exporting');
+  pptxBtn.textContent = 'Exporting...';
+
+  try {
+    const PptxGen = await loadPptxGen();
+    const pptx = new PptxGen();
+    pptx.layout = 'LAYOUT_16x9';
+    pptx.title = 'ImageCompare Export';
+
+    const slideWidth = 10;
+    const slideHeight = 5.625;
+    const barH = 0.35;
+
+    const addCaption = (slide, tupleName, modality, isWinner) => {
+      slide.addShape('rect', {
+        x: 0, y: 0, w: slideWidth, h: barH,
+        fill: { color: 'D0D0D0', transparency: 50 },
+      });
+      slide.addText(tupleName, {
+        x: 0.1, y: 0, w: slideWidth / 2, h: barH,
+        fontSize: 10, fontFace: 'Arial', bold: true, color: '000000', valign: 'middle', align: 'left',
+      });
+      const modLabel = isWinner ? `✓ ${modality}` : modality;
+      slide.addText(modLabel, {
+        x: slideWidth / 2, y: 0, w: slideWidth / 2 - 0.1, h: barH,
+        fontSize: 10, fontFace: 'Arial', bold: true, color: isWinner ? '008800' : '000000', valign: 'middle', align: 'right',
+      });
+    };
+
+    // Find crop tuples for a given base tuple name
+    const findCropTuples = (baseName) => {
+      const pattern = new RegExp(`^${baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_crop\\d+$`);
+      return tuples.map((t, i) => pattern.test(t.name) ? i : -1).filter(i => i >= 0);
+    };
+
+    // Find parent tuple for a crop tuple (strip _cropNN suffix)
+    const findParentTuple = (cropName) => {
+      const match = cropName.match(/^(.+)_crop\d+$/);
+      if (!match) return -1;
+      return tuples.findIndex(t => t.name === match[1]);
+    };
+
+    // Load image for a tuple+modality, returns {dataURL, width, height, file} or null
+    async function loadTupleImage(tupleIdx, modality) {
+      const tuple = tuples[tupleIdx];
+      const imgData = tuple.imageData.find(d => d.modality === modality);
+      if (!imgData) return null;
+      try {
+        const loaded = await loadImage(imgData.file);
+        const dataURL = imageToDataURL(loaded);
+        if (loaded.url) URL.revokeObjectURL(loaded.url);
+        return { data: dataURL, width: loaded.width, height: loaded.height, file: imgData.file };
+      } catch { return null; }
+    }
+
+    // Compute non-overlapping layout for crop slide: main image + callout thumbnail
+    function computeCropLayout(cropAspect, fullAspect) {
+      const gap = 0.15;
+      const defaultThumbW = 2;
+      const minThumbW = 1.2;
+
+      // Contain-fit crop image to full slide
+      let mainW, mainH;
+      if (cropAspect > slideWidth / slideHeight) {
+        mainW = slideWidth; mainH = slideWidth / cropAspect;
+      } else {
+        mainH = slideHeight; mainW = slideHeight * cropAspect;
+      }
+      let mainX = (slideWidth - mainW) / 2;
+      let mainY = (slideHeight - mainH) / 2;
+      const origArea = mainW * mainH;
+
+      // Thumbnail in bottom-right
+      let thumbW = defaultThumbW;
+      let thumbH = thumbW / fullAspect;
+      let thumbX = slideWidth - thumbW;
+      let thumbY = slideHeight - thumbH;
+
+      // Check overlap (with gap margin)
+      if (mainX + mainW > thumbX - gap && mainY + mainH > thumbY - gap) {
+        // Re-fit main image to available area left of thumbnail
+        const tryFit = (tw) => {
+          const th = tw / fullAspect;
+          const tx = slideWidth - tw;
+          const avail = tx - gap;
+          let w, h;
+          if (cropAspect > avail / slideHeight) {
+            w = avail; h = avail / cropAspect;
+          } else {
+            h = slideHeight; w = slideHeight * cropAspect;
+          }
+          return {
+            mainW: w, mainH: h, mainX: (avail - w) / 2, mainY: slideHeight - h,
+            thumbW: tw, thumbH: th, thumbX: tx, thumbY: slideHeight - th
+          };
+        };
+
+        let fit = tryFit(defaultThumbW);
+        // If main image shrank too much, try smaller thumbnail
+        if (fit.mainW * fit.mainH < origArea * 0.7) {
+          fit = tryFit(minThumbW);
+        }
+        // If still reasonable (>= 50% of original area), use the shifted layout
+        if (fit.mainW * fit.mainH >= origArea * 0.5) {
+          return fit;
+        }
+        // Otherwise accept overlap with original layout
+      }
+
+      return { mainW, mainH, mainX, mainY, thumbW, thumbH, thumbX, thumbY };
+    }
+
+    // Helper: add a crop slide (crop image main + full image callout with red rect)
+    async function addCropSlide(pptx, cropTupleIdx, fullTupleIdx, modality, tupleName, isWinner) {
+      const cropImgData = await loadTupleImage(cropTupleIdx, modality);
+      if (!cropImgData) return;
+      const fullImgData = await loadTupleImage(fullTupleIdx, modality);
+      if (!fullImgData) return;
+
+      const cropAspect = cropImgData.width / cropImgData.height;
+      const fullAspect = fullImgData.width / fullImgData.height;
+      const layout = computeCropLayout(cropAspect, fullAspect);
+
+      const slide = pptx.addSlide();
+      slide.addImage({ data: cropImgData.data, x: layout.mainX, y: layout.mainY, w: layout.mainW, h: layout.mainH });
+      slide.addImage({ data: fullImgData.data, x: layout.thumbX, y: layout.thumbY, w: layout.thumbW, h: layout.thumbH });
+
+      // Read crop metadata from PNG file
+      try {
+        const buf = await cropImgData.file.arrayBuffer();
+        const cropMeta = readCropMetadata(new Uint8Array(buf));
+        if (cropMeta) {
+          const scaleX = layout.thumbW / cropMeta.srcW;
+          const scaleY = layout.thumbH / cropMeta.srcH;
+          slide.addShape('rect', {
+            x: layout.thumbX + cropMeta.x * scaleX,
+            y: layout.thumbY + cropMeta.y * scaleY,
+            w: cropMeta.w * scaleX,
+            h: cropMeta.h * scaleY,
+            line: { color: 'FF0000', width: 2 },
+            fill: { type: 'none' },
+          });
+        }
+      } catch (e) { dbg('Crop metadata read failed:', e); }
+
+      addCaption(slide, tupleName, modality, isWinner);
+    }
+
+    for (let idx = 0; idx < votedIndices.length; idx++) {
+      const tupleIndex = votedIndices[idx];
+      const winnerModIdx = votedWinners[idx];
+      const tuple = tuples[tupleIndex];
+      if (!tuple) continue;
+
+      // Check if this voted tuple is itself a crop
+      const parentIdx = findParentTuple(tuple.name);
+      if (parentIdx >= 0) {
+        // This is a crop tuple — show crop image + parent full image callout
+        for (let mi = 0; mi < modalities.length; mi++) {
+          await addCropSlide(pptx, tupleIndex, parentIdx, modalities[mi], tuple.name, mi === winnerModIdx);
+        }
+        continue;
+      }
+
+      // Non-crop tuple: check for crop children
+      const cropTupleIndices = findCropTuples(tuple.name);
+      const hasCrops = cropTupleIndices.length > 0;
+      // If any crop child is also voted, show parent as simple slide (voted crops get their own slides)
+      const hasVotedCrops = hasCrops && cropTupleIndices.some(ci => votedIndices.includes(ci));
+
+      for (let mi = 0; mi < modalities.length; mi++) {
+        const modality = modalities[mi];
+        const isWinner = mi === winnerModIdx;
+
+        if (!hasCrops || hasVotedCrops) {
+          // Simple case: full image fit to slide
+          // (no crops, or crop children are voted separately — they get their own slides)
+          const imgData = await loadTupleImage(tupleIndex, modality);
+          if (!imgData) continue;
+          const slide = pptx.addSlide();
+          const imgAspect = imgData.width / imgData.height;
+          const slideAspect = slideWidth / slideHeight;
+          let imgW, imgH, imgX, imgY;
+          if (imgAspect > slideAspect) {
+            imgW = slideWidth; imgH = slideWidth / imgAspect;
+            imgX = 0; imgY = (slideHeight - imgH) / 2;
+          } else {
+            imgH = slideHeight; imgW = slideHeight * imgAspect;
+            imgX = (slideWidth - imgW) / 2; imgY = 0;
+          }
+          slide.addImage({ data: imgData.data, x: imgX, y: imgY, w: imgW, h: imgH });
+          addCaption(slide, tuple.name, modality, isWinner);
+        } else if (cropTupleIndices.length === 1) {
+          // Only parent voted, exactly one crop — present as if the crop was voted
+          await addCropSlide(pptx, cropTupleIndices[0], tupleIndex, modality, tuples[cropTupleIndices[0]].name, isWinner);
+        } else {
+          // Multiple crop children, none voted: one slide per crop
+          for (const cropTupleIdx of cropTupleIndices) {
+            await addCropSlide(pptx, cropTupleIdx, tupleIndex, modality, tuples[cropTupleIdx].name, isWinner);
+          }
+        }
+      }
+    }
+
+    // Save to folder via File System Access API (like results.txt), or download as fallback
+    if (rootDirHandle) {
+      let pptxNum = 1;
+      for await (const entry of rootDirHandle.values()) {
+        if (entry.kind === 'file') {
+          const match = entry.name.match(/^comparison_(\d+)\.pptx$/);
+          if (match) pptxNum = Math.max(pptxNum, parseInt(match[1], 10) + 1);
+        }
+      }
+      const filename = `comparison_${String(pptxNum).padStart(2, '0')}.pptx`;
+      const arrayBuf = await pptx.write({ outputType: 'arraybuffer' });
+      const fileHandle = await rootDirHandle.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(arrayBuf);
+      await writable.close();
+      dbg('PPTX saved to folder as', filename);
+    } else {
+      const filename = `comparison_${String(Date.now()).slice(-6)}`;
+      await pptx.writeFile({ fileName: filename });
+      dbg('PPTX downloaded as', filename);
+    }
+  } catch (err) {
+    console.error('PPTX export failed:', err);
+    alert('PPTX export failed: ' + err.message);
+  } finally {
+    pptxBtn.classList.remove('exporting');
+    pptxBtn.textContent = 'PPTX';
+  }
 }
 
 // Crop mouse handlers - return true if event was consumed

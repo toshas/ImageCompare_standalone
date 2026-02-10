@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.2.1
+
+- **Crop scales to each modality's resolution**: Crop rect is converted to relative coordinates (0–1) then scaled per-modality
+  - Fixes incorrect crops when modalities have different image sizes (e.g., 4K vs 1080p)
+- **Thumbnail cache fix**: Switched from `WeakMap<File>` to `Map` keyed by `modality/filename` string
+  - Poller re-reads directories creating new File objects, causing WeakMap cache misses and full thumbnail regeneration
+  - String-keyed Map survives poller cycles, so only genuinely new files regenerate thumbnails
+- **Crop saves all modalities**: `saveCropFiles()` now loads images on-demand for any modality not currently in `images[]`
+  - Snapshots `images` and `modalities` at start to avoid races with the poller
+  - Prevents silent skip of modalities whose images were cleared by a concurrent poll
+- **PPTX smart parent/crop logic**: When parent and crop are both voted, parent shows as simple full-image slide (voted crops get their own slides). When only parent is voted with exactly one crop, presents as if the crop was voted (crop slide with callout)
+- **PPTX non-overlapping crop layout**: Crop centerpiece and callout thumbnail no longer overlap — main image shifts left, thumbnail shrinks if needed, accepts overlap only for near-16:9 crops
+- **PPTX crop centerpiece anchored to bottom**: When downsized to avoid overlap, the crop image stays flush with the bottom edge
+
+## v0.2.0
+
+- **PowerPoint export**: Export voted tuples to `.pptx` via the PPTX button in the Tools panel
+  - Each modality gets its own slide with caption bar (tuple name + modality, winner highlighted green)
+  - Crop tuples include a callout thumbnail with red rectangle showing crop region on the full image
+  - Crop region coordinates read from PNG tEXt metadata embedded during crop
+  - pptxgenjs library lazy-loaded from CDN on first use (requires internet for export only)
+- **Crop metadata in PNG tEXt chunks**: Crop coordinates (`x,y,w,h,srcW,srcH`) are embedded in cropped PNG files
+  - Enables PPTX callout overlays showing exact crop region
+  - Uses standard PNG tEXt chunk injection (compatible with VSCode extension)
+- **Robust tuple matching tie-breaking**: Crop references (`_cropNN`) are explicitly deprioritized in fuzzy matching
+  - Prevents long modality names from incorrectly matching crop files instead of originals
+- **Floating panel fixes**: Hidden viewport indicator before image load, canvas starts at 160x100 to prevent zero-height panel
+
 ## v0.1.8
 
 - **Crop square shortcut**: Double-click a cardinal (N/S/E/W) resize handle to make the crop rectangle square
