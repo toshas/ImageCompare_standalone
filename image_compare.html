@@ -4500,6 +4500,7 @@ document.addEventListener('keydown', (e) => {
       if (currentModalityIndex < modalities.length - 1) {
         previousModalityIndex = currentModalityIndex;
         currentModalityIndex++;
+        lastSelectedThumb = { tupleIdx: currentTupleIndex, modIdx: currentModalityIndex };
         render();
       }
       break;
@@ -4508,6 +4509,7 @@ document.addEventListener('keydown', (e) => {
       if (currentModalityIndex > 0) {
         previousModalityIndex = currentModalityIndex;
         currentModalityIndex--;
+        lastSelectedThumb = { tupleIdx: currentTupleIndex, modIdx: currentModalityIndex };
         render();
       }
       break;
@@ -4527,7 +4529,9 @@ document.addEventListener('keydown', (e) => {
         if (isLoadingTuple || (e.repeat && now - lastKeyNavTime < KEY_NAV_THROTTLE)) break;
         lastKeyNavTime = now;
         isLoadingTuple = true;
-        loadTuple(currentTupleIndex - 1).finally(() => { isLoadingTuple = false; });
+        loadTuple(currentTupleIndex - 1).then(() => {
+          lastSelectedThumb = { tupleIdx: currentTupleIndex, modIdx: currentModalityIndex };
+        }).finally(() => { isLoadingTuple = false; });
       }
       break;
     case 'ArrowDown':
@@ -4538,7 +4542,9 @@ document.addEventListener('keydown', (e) => {
         if (isLoadingTuple || (e.repeat && now2 - lastKeyNavTime < KEY_NAV_THROTTLE)) break;
         lastKeyNavTime = now2;
         isLoadingTuple = true;
-        loadTuple(currentTupleIndex + 1).finally(() => { isLoadingTuple = false; });
+        loadTuple(currentTupleIndex + 1).then(() => {
+          lastSelectedThumb = { tupleIdx: currentTupleIndex, modIdx: currentModalityIndex };
+        }).finally(() => { isLoadingTuple = false; });
       }
       break;
     case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4':
@@ -4577,6 +4583,11 @@ document.addEventListener('keydown', (e) => {
     case 'Escape':
       if (e.code === 'Escape' && errorModal.classList.contains('active')) {
         cancelLoad();
+        break;
+      }
+      if (selectedThumbs.size > 0) {
+        selectedThumbs.clear();
+        updateThumbSelectionVisuals();
         break;
       }
       // If already reset, go back to dropzone
