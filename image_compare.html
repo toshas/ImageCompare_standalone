@@ -541,6 +541,31 @@ body {
   color: #fff;
 }
 .crop-cancel:hover { background: #555; }
+
+/* Copy selection */
+.carousel-thumb.copy-selected,
+.carousel-thumb.placeholder.copy-selected {
+  border-color: #0af !important;
+  opacity: 1 !important;
+  box-shadow: 0 0 4px rgba(0, 170, 255, 0.6);
+}
+#copy-toast {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.85);
+  color: #0af;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 50;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+#copy-toast.visible { opacity: 1; }
 </style>
 </head>
 <body>
@@ -555,7 +580,7 @@ body {
     <p style="margin-top: 20px; color: #666; font-size: 12px; line-height: 1.8;">
       ←→: modality | ↑↓: tuple | Space: flip | 1-9: jump to modality<br>
       [ ]: reorder modality | Enter: toggle winner | C: crop | Del: delete tuple<br>
-      Scroll: zoom | Drag: pan | Esc: reset
+      Ctrl+C: copy | Alt+S: save selection | Ctrl+Click: select | Scroll: zoom | Esc: reset
     </p>
   </div>
 </div>
@@ -609,6 +634,10 @@ body {
       <tr><td>Enter</td><td>Toggle winner for current modality</td></tr>
       <tr><td>Scroll</td><td>Zoom in/out</td></tr>
       <tr><td>Drag</td><td>Pan image</td></tr>
+      <tr><td>Ctrl+C</td><td>Copy image to clipboard</td></tr>
+      <tr><td>Alt+S</td><td>Save selected to selection/ folder</td></tr>
+      <tr><td>Ctrl+Click</td><td>Toggle thumbnail selection</td></tr>
+      <tr><td>Shift+Click</td><td>Select thumbnail range</td></tr>
       <tr><td>C</td><td>Toggle crop mode</td></tr>
       <tr><td>Del</td><td>Delete current tuple</td></tr>
       <tr><td>Esc</td><td>Reset zoom (2x: back to start)</td></tr>
@@ -718,6 +747,10 @@ let pollTimer = null;  // Interval ID for file polling
 
 // Crop tool state
 let cropMode = false;
+
+// Multi-select for clipboard copy
+let selectedThumbs = new Set(); // Set of "tupleIdx:modIdx" strings
+let lastSelectedThumb = null; // {tupleIdx, modIdx} for shift-click range
 
 // Thumbnail cache: keyed by "modality/filename" string so it survives poller re-reads
 // (WeakMap<File> fails because polling creates new File objects for the same files)
@@ -1864,6 +1897,8 @@ function resetToDropzone() {
   modalityDirHandles = new Map();
   stopPolling();
   if (cropMode) exitCropMode(true);
+  selectedThumbs.clear();
+  lastSelectedThumb = null;
   viewer.classList.remove('active');
   dropzone.classList.remove('hidden');
   info.classList.add('hidden');
@@ -2818,6 +2853,20 @@ async function buildCarousel() {
           e.stopPropagation();
           const ti = parseInt(thumb.dataset.tupleIndex);
           const mi = parseInt(thumb.dataset.modalityIndex);
+          if (e.ctrlKey || e.metaKey) {
+            toggleThumbSelection(ti, mi);
+            lastSelectedThumb = { tupleIdx: ti, modIdx: mi };
+            return;
+          }
+          if (e.shiftKey && lastSelectedThumb) {
+            selectThumbRange(lastSelectedThumb, { tupleIdx: ti, modIdx: mi });
+            return;
+          }
+          if (selectedThumbs.size > 0) {
+            selectedThumbs.clear();
+            updateThumbSelectionVisuals();
+          }
+          lastSelectedThumb = { tupleIdx: ti, modIdx: mi };
           goToTupleAndModality(ti, mi);
         });
 
@@ -2838,6 +2887,20 @@ async function buildCarousel() {
           e.stopPropagation();
           const ti = parseInt(placeholder.dataset.tupleIndex);
           const mi = parseInt(placeholder.dataset.modalityIndex);
+          if (e.ctrlKey || e.metaKey) {
+            toggleThumbSelection(ti, mi);
+            lastSelectedThumb = { tupleIdx: ti, modIdx: mi };
+            return;
+          }
+          if (e.shiftKey && lastSelectedThumb) {
+            selectThumbRange(lastSelectedThumb, { tupleIdx: ti, modIdx: mi });
+            return;
+          }
+          if (selectedThumbs.size > 0) {
+            selectedThumbs.clear();
+            updateThumbSelectionVisuals();
+          }
+          lastSelectedThumb = { tupleIdx: ti, modIdx: mi };
           goToTupleAndModality(ti, mi);
         });
 
@@ -2879,6 +2942,7 @@ async function buildCarousel() {
   }
 
   updateCarouselSelection();
+  updateThumbSelectionVisuals();
 
   // Generate uncached thumbnails sequentially (top to bottom)
   // Yield after each thumbnail to keep UI responsive during zoom/pan
@@ -3133,6 +3197,204 @@ function renderThumbnail(img, imgW, imgH, viewerW, viewerH, baseScale) {
     thumbViewport.style.top = Math.max(0, vpY) + 'px';
     thumbViewport.style.width = Math.min(vpW, thumbW - Math.max(0, vpX)) + 'px';
     thumbViewport.style.height = Math.min(vpH, thumbH - Math.max(0, vpY)) + 'px';
+  }
+}
+
+// =========================================================================
+// Multi-select & Clipboard Copy
+// =========================================================================
+
+function toggleThumbSelection(tupleIdx, modIdx) {
+  const key = `${tupleIdx}:${modIdx}`;
+  if (selectedThumbs.has(key)) {
+    selectedThumbs.delete(key);
+  } else {
+    selectedThumbs.add(key);
+  }
+  updateThumbSelectionVisuals();
+}
+
+function selectThumbRange(from, to) {
+  const minTuple = Math.min(from.tupleIdx, to.tupleIdx);
+  const maxTuple = Math.max(from.tupleIdx, to.tupleIdx);
+  const modIdx = to.modIdx;
+  for (let ti = minTuple; ti <= maxTuple; ti++) {
+    selectedThumbs.add(`${ti}:${modIdx}`);
+  }
+  updateThumbSelectionVisuals();
+}
+
+function updateThumbSelectionVisuals() {
+  const allThumbs = carousel.querySelectorAll('.carousel-thumb');
+  allThumbs.forEach(thumb => {
+    const ti = thumb.dataset.tupleIndex;
+    const mi = thumb.dataset.modalityIndex;
+    if (ti === undefined || mi === undefined) return;
+    const key = `${ti}:${mi}`;
+    if (selectedThumbs.has(key)) {
+      thumb.classList.add('copy-selected');
+    } else {
+      thumb.classList.remove('copy-selected');
+    }
+  });
+}
+
+async function copySelectedImages() {
+  try {
+    const clipboardItems = [];
+
+    if (selectedThumbs.size > 0) {
+      // Copy selected thumbnails
+      for (const key of selectedThumbs) {
+        const [ti, mi] = key.split(':').map(Number);
+        const tuple = tuples[ti];
+        if (!tuple || !tuple.imageData) continue;
+        const modalityName = modalities[mi];
+        const imgData = tuple.imageData.find(d => d.modality === modalityName);
+        if (!imgData) continue;
+        const blob = await imageFileToClipboardBlob(imgData.file);
+        if (blob) clipboardItems.push(new ClipboardItem({ 'image/png': blob }));
+      }
+    } else {
+      // Copy current image
+      const currentImage = images[currentModalityIndex];
+      if (!currentImage) return;
+      const blob = await imageObjToClipboardBlob(currentImage);
+      if (blob) clipboardItems.push(new ClipboardItem({ 'image/png': blob }));
+    }
+
+    if (clipboardItems.length === 0) return;
+
+    await navigator.clipboard.write(clipboardItems);
+    showCopyToast(`Copied ${clipboardItems.length} image${clipboardItems.length > 1 ? 's' : ''}`);
+  } catch (err) {
+    console.error('Copy to clipboard failed:', err);
+    // Try single image fallback if multi-copy failed
+    if (selectedThumbs.size > 1) {
+      try {
+        const firstKey = selectedThumbs.values().next().value;
+        const [ti, mi] = firstKey.split(':').map(Number);
+        const tuple = tuples[ti];
+        if (tuple && tuple.imageData) {
+          const imgData = tuple.imageData.find(d => d.modality === modalities[mi]);
+          if (imgData) {
+            const blob = await imageFileToClipboardBlob(imgData.file);
+            if (blob) {
+              await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+              showCopyToast('Copied 1 image (multi-copy not supported)');
+              return;
+            }
+          }
+        }
+      } catch (err2) {
+        // fall through to error toast
+      }
+    }
+    showCopyToast('Copy failed');
+  }
+}
+
+async function imageFileToClipboardBlob(file) {
+  const loaded = await loadImage(file);
+  const c = document.createElement('canvas');
+  c.width = loaded.width;
+  c.height = loaded.height;
+  const cCtx = c.getContext('2d');
+  cCtx.drawImage(loaded.img, 0, 0);
+  if (loaded.url) URL.revokeObjectURL(loaded.url);
+  return new Promise(resolve => c.toBlob(resolve, 'image/png'));
+}
+
+async function imageObjToClipboardBlob(imageObj) {
+  const c = document.createElement('canvas');
+  c.width = imageObj.width;
+  c.height = imageObj.height;
+  const cCtx = c.getContext('2d');
+  cCtx.drawImage(imageObj.img, 0, 0);
+  return new Promise(resolve => c.toBlob(resolve, 'image/png'));
+}
+
+let copyToastEl = null;
+let copyToastTimeout = null;
+
+function showCopyToast(message) {
+  if (!copyToastEl) {
+    copyToastEl = document.createElement('div');
+    copyToastEl.id = 'copy-toast';
+    viewer.appendChild(copyToastEl);
+  }
+  copyToastEl.textContent = message;
+  copyToastEl.classList.add('visible');
+  clearTimeout(copyToastTimeout);
+  copyToastTimeout = setTimeout(() => {
+    copyToastEl.classList.remove('visible');
+  }, 1500);
+}
+
+async function saveSelectedToFolder() {
+  if (!rootDirHandle) {
+    showCopyToast('Only available in directory mode');
+    return;
+  }
+
+  // Gather images to save: selected thumbs, or current image
+  const imagesToSave = [];
+  if (selectedThumbs.size > 0) {
+    for (const key of selectedThumbs) {
+      const [ti, mi] = key.split(':').map(Number);
+      const tuple = tuples[ti];
+      if (!tuple || !tuple.imageData) continue;
+      const modalityName = modalities[mi];
+      const imgData = tuple.imageData.find(d => d.modality === modalityName);
+      if (!imgData) continue;
+      imagesToSave.push({ file: imgData.file, tupleName: tuple.name, modality: modalityName });
+    }
+  } else {
+    const currentImage = images[currentModalityIndex];
+    if (!currentImage) return;
+    const tuple = tuples[currentTupleIndex];
+    if (!tuple || !tuple.imageData) return;
+    const modalityName = modalities[currentModalityIndex];
+    const imgData = tuple.imageData.find(d => d.modality === modalityName);
+    if (!imgData) return;
+    imagesToSave.push({ file: imgData.file, tupleName: tuple.name, modality: modalityName });
+  }
+
+  if (imagesToSave.length === 0) return;
+
+  try {
+    // Find a unique folder name: selection, selection_1, selection_2, ...
+    let folderName = 'selection';
+    let n = 0;
+    while (true) {
+      try {
+        await rootDirHandle.getDirectoryHandle(folderName, { create: false });
+        // Exists — try next number
+        n++;
+        folderName = `selection_${n}`;
+      } catch {
+        break; // Doesn't exist — use this name
+      }
+    }
+
+    const selDir = await rootDirHandle.getDirectoryHandle(folderName, { create: true });
+    let saved = 0;
+
+    for (const item of imagesToSave) {
+      const filename = `${item.tupleName}_${item.modality}.${item.file.name.split('.').pop()}`;
+      const fileHandle = await selDir.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      // Read original file data (preserve format, no re-encoding)
+      const blob = item.file instanceof File ? item.file : await item.file.getFile?.() || item.file;
+      await writable.write(blob);
+      await writable.close();
+      saved++;
+    }
+
+    showCopyToast(`Saved ${saved} image${saved > 1 ? 's' : ''} to ${folderName}/`);
+  } catch (err) {
+    console.error('Save to selection failed:', err);
+    showCopyToast('Save failed: ' + err.message);
   }
 }
 
@@ -4085,6 +4347,20 @@ document.addEventListener('keydown', (e) => {
   }
 
   if (modalities.length === 0) return;
+
+  // Ctrl+C: copy images to clipboard
+  if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC') {
+    e.preventDefault();
+    copySelectedImages();
+    return;
+  }
+
+  // Alt+S: save selected images to selection/ folder
+  if (e.altKey && e.code === 'KeyS') {
+    e.preventDefault();
+    saveSelectedToFolder();
+    return;
+  }
 
   // Crop mode key interception
   if (cropMode && handleCropKeyDown(e)) return;
