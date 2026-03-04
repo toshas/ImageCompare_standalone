@@ -4589,7 +4589,8 @@ document.addEventListener('mousemove', (e) => {
   if (!isResizingCarousel) return;
 
   const delta = e.clientX - resizeStartX;
-  const newWidth = Math.max(100, Math.min(500, resizeStartWidth + delta));
+  const maxWidth = Math.floor(window.innerWidth * 0.8);
+  const newWidth = Math.max(100, Math.min(maxWidth, resizeStartWidth + delta));
   CAROUSEL_WIDTH = newWidth;
   carousel.style.width = CAROUSEL_WIDTH + 'px';
   carouselResize.style.left = (CAROUSEL_WIDTH - 4) + 'px';
@@ -4597,7 +4598,12 @@ document.addEventListener('mousemove', (e) => {
   // Recalculate thumbnail size
   updateCarouselThumbSize();
 
-  // Update thumbnail sizes in DOM
+  // Update thumbnail and container sizes in DOM
+  const containers = carousel.querySelectorAll('.carousel-thumb-container');
+  containers.forEach(container => {
+    container.style.width = CAROUSEL_THUMB_SIZE + 'px';
+    container.style.height = CAROUSEL_THUMB_SIZE + 'px';
+  });
   const thumbs = carousel.querySelectorAll('.carousel-thumb');
   thumbs.forEach(thumb => {
     thumb.style.width = CAROUSEL_THUMB_SIZE + 'px';
