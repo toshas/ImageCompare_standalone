@@ -3071,6 +3071,7 @@ function updateCarouselSelection() {
   });
 
   scrollCarouselToCurrentTuple();
+  updateThumbSelectionVisuals();
 }
 
 function scrollCarouselToCurrentTuple() {
@@ -3266,21 +3267,25 @@ function toggleThumbSelection(tupleIdx, modIdx) {
 function selectThumbRange(from, to) {
   const minTuple = Math.min(from.tupleIdx, to.tupleIdx);
   const maxTuple = Math.max(from.tupleIdx, to.tupleIdx);
-  const modIdx = to.modIdx;
+  const minMod = Math.min(from.modIdx, to.modIdx);
+  const maxMod = Math.max(from.modIdx, to.modIdx);
   for (let ti = minTuple; ti <= maxTuple; ti++) {
-    selectedThumbs.add(`${ti}:${modIdx}`);
+    for (let mi = minMod; mi <= maxMod; mi++) {
+      selectedThumbs.add(`${ti}:${mi}`);
+    }
   }
   updateThumbSelectionVisuals();
 }
 
 function updateThumbSelectionVisuals() {
+  const currentKey = `${currentTupleIndex}:${currentModalityIndex}`;
   const allThumbs = carousel.querySelectorAll('.carousel-thumb');
   allThumbs.forEach(thumb => {
     const ti = thumb.dataset.tupleIndex;
     const mi = thumb.dataset.modalityIndex;
     if (ti === undefined || mi === undefined) return;
     const key = `${ti}:${mi}`;
-    if (selectedThumbs.has(key)) {
+    if (selectedThumbs.has(key) || key === currentKey) {
       thumb.classList.add('copy-selected');
     } else {
       thumb.classList.remove('copy-selected');
@@ -3292,23 +3297,28 @@ async function copySelectedImages() {
   try {
     const clipboardItems = [];
 
-    if (selectedThumbs.size > 0) {
-      // Copy selected thumbnails
-      for (const key of selectedThumbs) {
-        const [ti, mi] = key.split(':').map(Number);
-        const tuple = tuples[ti];
-        if (!tuple || !tuple.imageData) continue;
-        const modalityName = modalities[mi];
-        const imgData = tuple.imageData.find(d => d.modality === modalityName);
-        if (!imgData) continue;
-        const blob = await imageFileToClipboardBlob(imgData.file);
-        if (blob) clipboardItems.push(new ClipboardItem({ 'image/png': blob }));
-      }
-    } else {
-      // Copy current image
-      const currentImage = images[currentModalityIndex];
-      if (!currentImage) return;
+    // Always include current image + any explicitly selected thumbs
+    const addedKeys = new Set();
+
+    // Current image first
+    const currentImage = images[currentModalityIndex];
+    if (currentImage) {
       const blob = await imageObjToClipboardBlob(currentImage);
+      if (blob) clipboardItems.push(new ClipboardItem({ 'image/png': blob }));
+    }
+    addedKeys.add(`${currentTupleIndex}:${currentModalityIndex}`);
+
+    // Explicitly selected thumbs
+    for (const key of selectedThumbs) {
+      if (addedKeys.has(key)) continue;
+      addedKeys.add(key);
+      const [ti, mi] = key.split(':').map(Number);
+      const tuple = tuples[ti];
+      if (!tuple || !tuple.imageData) continue;
+      const modalityName = modalities[mi];
+      const imgData = tuple.imageData.find(d => d.modality === modalityName);
+      if (!imgData) continue;
+      const blob = await imageFileToClipboardBlob(imgData.file);
       if (blob) clipboardItems.push(new ClipboardItem({ 'image/png': blob }));
     }
 
@@ -3386,26 +3396,34 @@ async function saveSelectedToFolder() {
     return;
   }
 
-  // Gather images to save: selected thumbs, or current image
+  // Gather images to save: selected thumbs + current image (always included)
   const imagesToSave = [];
-  if (selectedThumbs.size > 0) {
-    for (const key of selectedThumbs) {
-      const [ti, mi] = key.split(':').map(Number);
-      const tuple = tuples[ti];
-      if (!tuple || !tuple.imageData) continue;
-      const modalityName = modalities[mi];
-      const imgData = tuple.imageData.find(d => d.modality === modalityName);
-      if (!imgData) continue;
-      imagesToSave.push({ file: imgData.file, tupleName: tuple.name, modality: modalityName });
-    }
-  } else {
-    const currentImage = images[currentModalityIndex];
-    if (!currentImage) return;
+  const addedKeys = new Set();
+
+  // Always include current image
+  const currentKey = `${currentTupleIndex}:${currentModalityIndex}`;
+  addedKeys.add(currentKey);
+  {
     const tuple = tuples[currentTupleIndex];
-    if (!tuple || !tuple.imageData) return;
-    const modalityName = modalities[currentModalityIndex];
+    if (tuple && tuple.imageData) {
+      const modalityName = modalities[currentModalityIndex];
+      const imgData = tuple.imageData.find(d => d.modality === modalityName);
+      if (imgData) {
+        imagesToSave.push({ file: imgData.file, tupleName: tuple.name, modality: modalityName });
+      }
+    }
+  }
+
+  // Add explicitly selected thumbs
+  for (const key of selectedThumbs) {
+    if (addedKeys.has(key)) continue;
+    addedKeys.add(key);
+    const [ti, mi] = key.split(':').map(Number);
+    const tuple = tuples[ti];
+    if (!tuple || !tuple.imageData) continue;
+    const modalityName = modalities[mi];
     const imgData = tuple.imageData.find(d => d.modality === modalityName);
-    if (!imgData) return;
+    if (!imgData) continue;
     imagesToSave.push({ file: imgData.file, tupleName: tuple.name, modality: modalityName });
   }
 
