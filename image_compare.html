@@ -952,17 +952,26 @@ async function handleFolderInput(files) {
   }
 
   if (filesByDir.size < 2) {
-    // No subdirectories, treat as single tuple
+    // No subdirectories - show images as single-column browser
     const imageFiles = Array.from(files).filter(f => {
       const ext = f.name.split('.').pop().toLowerCase();
       return IMAGE_EXTENSIONS.includes(ext);
     });
 
-    if (imageFiles.length >= 2) {
-      await handleFilesAsTuple(imageFiles);
-    } else {
-      alert('Need at least 2 images or a folder with subdirectories as modalities');
+    if (imageFiles.length === 0) {
+      alert('No images found in folder');
+      return;
     }
+
+    rootDirHandle = null;
+    votingEnabled = false;
+    winners = new Map();
+
+    // Derive folder name from path
+    const pathParts = files[0].webkitRelativePath.split('/');
+    const folderName = pathParts[0] || 'images';
+    const fileData = imageFiles.map(f => ({ name: f.name, file: f }));
+    await loadFlatDirectoryModern(folderName, fileData);
     return;
   }
 
@@ -1000,7 +1009,17 @@ async function handleSingleDirectory(dirEntry) {
   });
 
   if (subdirs.length < 2) {
-    alert('Folder must contain at least 2 subdirectories as modalities');
+    // No subdirectory structure - check for images directly in the folder
+    const files = await readDirectory(dirEntry);
+    if (files.length === 0) {
+      alert('Folder must contain at least 2 subdirectories as modalities, or image files');
+      return;
+    }
+    // Single modality: each image is its own tuple
+    rootDirHandle = null;
+    votingEnabled = false;
+    winners = new Map();
+    await loadFlatDirectoryLegacy(dirEntry.name, files);
     return;
   }
 
@@ -1036,7 +1055,20 @@ async function handleSingleDirectoryModern(dirHandle) {
   }
 
   if (subdirs.length < 2) {
-    alert('Folder must contain at least 2 subdirectories as modalities');
+    // No subdirectory structure - check for images directly in the folder
+    const files = await readDirectoryModern(dirHandle);
+    if (files.length === 0) {
+      alert('Folder must contain at least 2 subdirectories as modalities, or image files');
+      return;
+    }
+    // Single modality: each image is its own tuple
+    rootDirHandle = dirHandle;
+    votingEnabled = false;
+    winners = new Map();
+    modalityDirHandles = new Map();
+    selectionDirHandle = null;
+    selectionDirName = null;
+    await loadFlatDirectoryModern(dirHandle.name, files);
     return;
   }
 
@@ -1224,6 +1256,47 @@ async function processSubdirectoriesAsModalitiesLegacy(filesByDir) {
 
   updateCarouselThumbSize();
 
+  await loadTuple(0);
+}
+
+// Load a flat directory (no subdirectories) as a single-modality, multi-tuple view
+// files: array of {name, file} objects (modern format)
+async function loadFlatDirectoryModern(folderName, files) {
+  // Sort files naturally
+  files.sort((a, b) => naturalSort(a, b));
+
+  modalities = [folderName];
+  modalityColors = [MODALITY_COLORS[0]];
+
+  // Each file becomes its own tuple
+  tuples = files.map(fd => ({
+    name: fd.name.replace(/\.[^.]+$/, ''),  // strip extension
+    imageData: [{ file: fd.file, modality: folderName }]
+  }));
+
+  isMultiTupleMode = tuples.length > 1;
+  currentTupleIndex = 0;
+
+  updateCarouselThumbSize();
+  await loadTuple(0);
+}
+
+// Legacy version for readDirectory results (array of {name, file} objects)
+async function loadFlatDirectoryLegacy(folderName, files) {
+  files.sort((a, b) => naturalSort(a, b));
+
+  modalities = [folderName];
+  modalityColors = [MODALITY_COLORS[0]];
+
+  tuples = files.map(fd => ({
+    name: fd.name.replace(/\.[^.]+$/, ''),
+    imageData: [{ file: fd.file, modality: folderName }]
+  }));
+
+  isMultiTupleMode = tuples.length > 1;
+  currentTupleIndex = 0;
+
+  updateCarouselThumbSize();
   await loadTuple(0);
 }
 
