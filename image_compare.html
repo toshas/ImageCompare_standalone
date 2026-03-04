@@ -132,16 +132,18 @@ body {
 #info.hidden { display: none; }
 #modality-selector {
   display: flex;
-  gap: 2px 4px;
-  flex-wrap: wrap;
+  gap: 4px;
   align-items: center;
-  align-content: center;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;  /* Firefox */
 }
+#modality-selector::-webkit-scrollbar { display: none; }
 #status {
   color: #888;
   flex: 1;
-  min-width: 0;
+  min-width: 120px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -151,7 +153,9 @@ body {
 #status-name {
   flex: 1;
   text-align: left;
-  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #status-info {
   flex-shrink: 0;
@@ -2675,50 +2679,9 @@ function activateViewer(loadedImages, tupleName, preserveModalityIndex = -1) {
   render();
 }
 
-// Compute the max height needed for the info bar across all modalities in the tuple
+// Set info bar height (status-name uses ellipsis so height is constant)
 function computeInfoBarHeight(loadedImages, tupleName) {
-  // Reset to auto height first so we can measure
   info.style.height = 'auto';
-
-  let maxHeight = 0;
-  const originalNameText = statusName.textContent;
-  const originalInfoText = statusInfo.textContent;
-
-  // Measure height for each filename (skip undefined/missing)
-  for (const img of loadedImages) {
-    if (!img) continue;  // Skip missing modalities
-    let nameText = `${img.name} (${img.width}×${img.height})`;
-    if (isMultiTupleMode) {
-      nameText = `[${currentTupleIndex + 1}/${tuples.length}] ` + nameText;
-    }
-    statusName.textContent = nameText;
-    statusInfo.textContent = 'Zoom: 1.0×';
-
-    // Force layout recalculation
-    const height = info.offsetHeight;
-    if (height > maxHeight) {
-      maxHeight = height;
-    }
-  }
-
-  // Also measure "not available" text
-  let notAvailText = `Modality: not available`;
-  if (isMultiTupleMode) {
-    notAvailText = `[${currentTupleIndex + 1}/${tuples.length}] ` + notAvailText;
-  }
-  statusName.textContent = notAvailText;
-  statusInfo.textContent = 'Zoom: 1.0×';
-  const notAvailHeight = info.offsetHeight;
-  if (notAvailHeight > maxHeight) {
-    maxHeight = notAvailHeight;
-  }
-
-  // Restore original text
-  statusName.textContent = originalNameText;
-  statusInfo.textContent = originalInfoText;
-
-  // Set fixed height
-  info.style.height = maxHeight + 'px';
 }
 
 // Recompute info bar height on window resize
@@ -2865,6 +2828,10 @@ function updateModalitySelector() {
       btn.textContent = `${idx + 1}: ${modalityName}`;
     }
   });
+
+  // Scroll active button into view if selector is overflowing
+  const activeBtn = modalitySelector.querySelector('.modality-btn.active');
+  if (activeBtn) activeBtn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 
   // Update reorder button states
   reorderLeftBtn.disabled = currentModalityIndex <= 0;
@@ -3209,6 +3176,7 @@ function render() {
       nameText = `[${currentTupleIndex + 1}/${tuples.length}] ` + nameText;
     }
     statusName.textContent = nameText;
+    statusName.title = nameText;
     statusInfo.textContent = `Zoom: ${zoom.toFixed(1)}×`;
 
     // Draw placeholder on canvas
@@ -3248,6 +3216,7 @@ function render() {
     nameText = `[${currentTupleIndex + 1}/${tuples.length}] ` + nameText;
   }
   statusName.textContent = nameText;
+  statusName.title = nameText;
   statusInfo.textContent = `Zoom: ${zoom.toFixed(1)}×`;
 
   // Use requestAnimationFrame to ensure layout is updated before measuring
@@ -4707,6 +4676,15 @@ carousel.addEventListener('wheel', (e) => {
   e.stopPropagation();
   const fast = e.altKey ? 5 : 1;
   carousel.scrollTop += e.deltaY * fast;
+}, { passive: false });
+
+// Modality selector horizontal scrolling (convert vertical wheel to horizontal)
+modalitySelector.addEventListener('wheel', (e) => {
+  if (modalitySelector.scrollWidth > modalitySelector.clientWidth) {
+    e.preventDefault();
+    e.stopPropagation();
+    modalitySelector.scrollLeft += e.deltaY;
+  }
 }, { passive: false });
 
 // Carousel resize handle
