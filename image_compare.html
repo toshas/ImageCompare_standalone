@@ -757,6 +757,7 @@ let lastSelectedThumb = null; // {tupleIdx, modIdx} for shift-click range
 // Thumbnail cache: keyed by "modality/filename" string so it survives poller re-reads
 // (WeakMap<File> fails because polling creates new File objects for the same files)
 const thumbnailCache = new Map();
+let thumbnailGenId = 0;  // Incremented each buildCarousel call to cancel stale generators
 
 // Preloaded tuples cache: Map of tupleIdx -> loaded images array
 const preloadedTuples = new Map();
@@ -2800,12 +2801,14 @@ function updateModalitySelector() {
 
 // Carousel functions
 async function buildCarousel() {
+  const myGenId = ++thumbnailGenId;  // Cancel any in-flight generator
   carousel.innerHTML = '';
   carousel.style.width = CAROUSEL_WIDTH + 'px';
 
   if (!isMultiTupleMode || tuples.length <= 1) {
     carousel.classList.remove('active');
     carouselResize.classList.remove('active');
+    progressContainer.classList.remove('active');
     return;
   }
 
@@ -2984,12 +2987,20 @@ async function buildCarousel() {
   // Yield after each thumbnail to keep UI responsive during zoom/pan
   async function generateThumbnailsSequentially() {
     for (const { thumb, file, tupleIdx, modIdx, cacheKey } of thumbElements) {
+      // Stop if a newer buildCarousel call has started
+      if (myGenId !== thumbnailGenId) return;
+
       // Yield before each thumbnail to allow UI updates
       await new Promise(resolve => setTimeout(resolve, 0));
 
+      // Re-check after yield (buildCarousel may have been called during the yield)
+      if (myGenId !== thumbnailGenId) return;
+
       try {
         const dataUrl = await generateThumbnail(file, CAROUSEL_THUMB_SIZE * 2);
+        // Cache the result even if cancelled (avoids re-generating next time)
         thumbnailCache.set(cacheKey, dataUrl);
+        if (myGenId !== thumbnailGenId) return;
         thumb.src = dataUrl;
         loadedThumbs++;
 
@@ -3002,8 +3013,10 @@ async function buildCarousel() {
       }
     }
 
-    // Done - hide progress bar
-    progressContainer.classList.remove('active');
+    // Only hide progress bar if we're still the active generator
+    if (myGenId === thumbnailGenId) {
+      progressContainer.classList.remove('active');
+    }
   }
 
   if (thumbElements.length > 0) {
