@@ -132,16 +132,18 @@ body {
 #info.hidden { display: none; }
 #modality-selector {
   display: flex;
-  gap: 2px 4px;
-  flex-wrap: wrap;
+  gap: 4px;
   align-items: center;
-  align-content: center;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;  /* Firefox */
 }
+#modality-selector::-webkit-scrollbar { display: none; }
 #status {
   color: #888;
   flex: 1;
-  min-width: 0;
+  min-width: 120px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -151,7 +153,9 @@ body {
 #status-name {
   flex: 1;
   text-align: left;
-  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #status-info {
   flex-shrink: 0;
@@ -168,6 +172,7 @@ body {
   cursor: pointer;
   transition: opacity 0.15s, transform 0.15s;
   border: none;
+  outline: none;
   color: #000;
   user-select: none;
   position: relative;
@@ -178,7 +183,7 @@ body {
 }
 .modality-btn.active {
   opacity: 1;
-  box-shadow: 0 0 0 2px #fff;
+  box-shadow: none;
 }
 .modality-btn.inactive {
   opacity: 0.4;
@@ -541,6 +546,31 @@ body {
   color: #fff;
 }
 .crop-cancel:hover { background: #555; }
+
+/* Copy selection */
+.carousel-thumb.copy-selected,
+.carousel-thumb.placeholder.copy-selected {
+  border-color: #0af !important;
+  opacity: 1 !important;
+  box-shadow: 0 0 4px rgba(0, 170, 255, 0.6);
+}
+#copy-toast {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.85);
+  color: #0af;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 50;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+#copy-toast.visible { opacity: 1; }
 </style>
 </head>
 <body>
@@ -555,7 +585,7 @@ body {
     <p style="margin-top: 20px; color: #666; font-size: 12px; line-height: 1.8;">
       ←→: modality | ↑↓: tuple | Space: flip | 1-9: jump to modality<br>
       [ ]: reorder modality | Enter: toggle winner | C: crop | Del: delete tuple<br>
-      Scroll: zoom | Drag: pan | Esc: reset
+      Ctrl+C: copy | Alt+S: save selection | Ctrl+Click: select | Scroll: zoom | Esc: reset
     </p>
   </div>
 </div>
@@ -609,6 +639,10 @@ body {
       <tr><td>Enter</td><td>Toggle winner for current modality</td></tr>
       <tr><td>Scroll</td><td>Zoom in/out</td></tr>
       <tr><td>Drag</td><td>Pan image</td></tr>
+      <tr><td>Ctrl+C</td><td>Copy image to clipboard</td></tr>
+      <tr><td>Alt+S</td><td>Save selected to selection/ folder</td></tr>
+      <tr><td>Ctrl+Click</td><td>Toggle thumbnail selection</td></tr>
+      <tr><td>Shift+Click</td><td>Select thumbnail range</td></tr>
       <tr><td>C</td><td>Toggle crop mode</td></tr>
       <tr><td>Del</td><td>Delete current tuple</td></tr>
       <tr><td>Esc</td><td>Reset zoom (2x: back to start)</td></tr>
@@ -714,14 +748,21 @@ let winners = new Map();  // tupleIndex -> modalityIndex
 let votingEnabled = false;  // Only enabled in directory mode
 let rootDirHandle = null;  // Directory handle for saving results.txt (File System Access API)
 let modalityDirHandles = new Map();  // modalityName -> FileSystemDirectoryHandle
+let selectionDirHandle = null;  // Existing selection folder detected on load
+let selectionDirName = null;    // Name of the detected selection folder
 let pollTimer = null;  // Interval ID for file polling
 
 // Crop tool state
 let cropMode = false;
 
+// Multi-select for clipboard copy
+let selectedThumbs = new Set(); // Set of "tupleIdx:modIdx" strings
+let lastSelectedThumb = null; // {tupleIdx, modIdx} for shift-click range
+
 // Thumbnail cache: keyed by "modality/filename" string so it survives poller re-reads
 // (WeakMap<File> fails because polling creates new File objects for the same files)
 const thumbnailCache = new Map();
+let thumbnailGenId = 0;  // Incremented each buildCarousel call to cancel stale generators
 
 // Preloaded tuples cache: Map of tupleIdx -> loaded images array
 const preloadedTuples = new Map();
@@ -916,17 +957,26 @@ async function handleFolderInput(files) {
   }
 
   if (filesByDir.size < 2) {
-    // No subdirectories, treat as single tuple
+    // No subdirectories - show images as single-column browser
     const imageFiles = Array.from(files).filter(f => {
       const ext = f.name.split('.').pop().toLowerCase();
       return IMAGE_EXTENSIONS.includes(ext);
     });
 
-    if (imageFiles.length >= 2) {
-      await handleFilesAsTuple(imageFiles);
-    } else {
-      alert('Need at least 2 images or a folder with subdirectories as modalities');
+    if (imageFiles.length === 0) {
+      alert('No images found in folder');
+      return;
     }
+
+    rootDirHandle = null;
+    votingEnabled = false;
+    winners = new Map();
+
+    // Derive folder name from path
+    const pathParts = files[0].webkitRelativePath.split('/');
+    const folderName = pathParts[0] || 'images';
+    const fileData = imageFiles.map(f => ({ name: f.name, file: f }));
+    await loadFlatDirectoryModern(folderName, fileData);
     return;
   }
 
@@ -964,7 +1014,17 @@ async function handleSingleDirectory(dirEntry) {
   });
 
   if (subdirs.length < 2) {
-    alert('Folder must contain at least 2 subdirectories as modalities');
+    // No subdirectory structure - check for images directly in the folder
+    const files = await readDirectory(dirEntry);
+    if (files.length === 0) {
+      alert('Folder must contain at least 2 subdirectories as modalities, or image files');
+      return;
+    }
+    // Single modality: each image is its own tuple
+    rootDirHandle = null;
+    votingEnabled = false;
+    winners = new Map();
+    await loadFlatDirectoryLegacy(dirEntry.name, files);
     return;
   }
 
@@ -1000,18 +1060,65 @@ async function handleSingleDirectoryModern(dirHandle) {
   }
 
   if (subdirs.length < 2) {
-    alert('Folder must contain at least 2 subdirectories as modalities');
+    // No subdirectory structure - check for images directly in the folder
+    const files = await readDirectoryModern(dirHandle);
+    if (files.length === 0) {
+      alert('Folder must contain at least 2 subdirectories as modalities, or image files');
+      return;
+    }
+    // Single modality: each image is its own tuple
+    rootDirHandle = dirHandle;
+    votingEnabled = false;
+    winners = new Map();
+    modalityDirHandles = new Map();
+    selectionDirHandle = null;
+    selectionDirName = null;
+    await loadFlatDirectoryModern(dirHandle.name, files);
     return;
   }
 
   // Read files from each subdirectory
   const filesByDir = new Map();
   modalityDirHandles = new Map();
+  const subdirHandles = new Map(); // name -> dirHandle
   for (const subdir of subdirs) {
     const files = await readDirectoryModern(subdir);
     if (files.length > 0) {
       filesByDir.set(subdir.name, files);
       modalityDirHandles.set(subdir.name, subdir);
+      subdirHandles.set(subdir.name, subdir);
+    }
+  }
+
+  // Detect existing selection folders (selection, selection_1, selection_2, ...)
+  // If a selection folder's image count doesn't match the other modalities, treat it
+  // as a save target for Alt+S rather than a modality
+  selectionDirHandle = null;
+  selectionDirName = null;
+  const selectionPattern = /^selection(?:_\d+)?$/i;
+  const selectionCandidates = [];
+  const nonSelectionCounts = [];
+  for (const [name, files] of filesByDir) {
+    if (selectionPattern.test(name)) {
+      selectionCandidates.push({ name, count: files.length });
+    } else {
+      nonSelectionCounts.push(files.length);
+    }
+  }
+  if (selectionCandidates.length > 0 && nonSelectionCounts.length >= 2) {
+    // Use median of non-selection folders as reference
+    nonSelectionCounts.sort((a, b) => a - b);
+    const median = nonSelectionCounts[Math.floor(nonSelectionCounts.length / 2)];
+    // A selection folder is one with less than half the median count
+    for (const cand of selectionCandidates) {
+      if (cand.count < median * 0.5) {
+        // Pick the highest-numbered selection folder as the active one
+        selectionDirHandle = subdirHandles.get(cand.name);
+        selectionDirName = cand.name;
+        filesByDir.delete(cand.name);
+        modalityDirHandles.delete(cand.name);
+        if (DEBUG) console.log(`[selection] Detected "${cand.name}" as selection folder (${cand.count} files vs median ${median})`);
+      }
     }
   }
 
@@ -1154,6 +1261,47 @@ async function processSubdirectoriesAsModalitiesLegacy(filesByDir) {
 
   updateCarouselThumbSize();
 
+  await loadTuple(0);
+}
+
+// Load a flat directory (no subdirectories) as a single-modality, multi-tuple view
+// files: array of {name, file} objects (modern format)
+async function loadFlatDirectoryModern(folderName, files) {
+  // Sort files naturally
+  files.sort((a, b) => naturalSort(a, b));
+
+  modalities = [folderName];
+  modalityColors = [MODALITY_COLORS[0]];
+
+  // Each file becomes its own tuple
+  tuples = files.map(fd => ({
+    name: fd.name.replace(/\.[^.]+$/, ''),  // strip extension
+    imageData: [{ file: fd.file, modality: folderName }]
+  }));
+
+  isMultiTupleMode = tuples.length > 1;
+  currentTupleIndex = 0;
+
+  updateCarouselThumbSize();
+  await loadTuple(0);
+}
+
+// Legacy version for readDirectory results (array of {name, file} objects)
+async function loadFlatDirectoryLegacy(folderName, files) {
+  files.sort((a, b) => naturalSort(a, b));
+
+  modalities = [folderName];
+  modalityColors = [MODALITY_COLORS[0]];
+
+  tuples = files.map(fd => ({
+    name: fd.name.replace(/\.[^.]+$/, ''),
+    imageData: [{ file: fd.file, modality: folderName }]
+  }));
+
+  isMultiTupleMode = tuples.length > 1;
+  currentTupleIndex = 0;
+
+  updateCarouselThumbSize();
   await loadTuple(0);
 }
 
@@ -1864,6 +2012,8 @@ function resetToDropzone() {
   modalityDirHandles = new Map();
   stopPolling();
   if (cropMode) exitCropMode(true);
+  selectedThumbs.clear();
+  lastSelectedThumb = null;
   viewer.classList.remove('active');
   dropzone.classList.remove('hidden');
   info.classList.add('hidden');
@@ -2530,50 +2680,9 @@ function activateViewer(loadedImages, tupleName, preserveModalityIndex = -1) {
   render();
 }
 
-// Compute the max height needed for the info bar across all modalities in the tuple
+// Set info bar height (status-name uses ellipsis so height is constant)
 function computeInfoBarHeight(loadedImages, tupleName) {
-  // Reset to auto height first so we can measure
   info.style.height = 'auto';
-
-  let maxHeight = 0;
-  const originalNameText = statusName.textContent;
-  const originalInfoText = statusInfo.textContent;
-
-  // Measure height for each filename (skip undefined/missing)
-  for (const img of loadedImages) {
-    if (!img) continue;  // Skip missing modalities
-    let nameText = `${img.name} (${img.width}×${img.height})`;
-    if (isMultiTupleMode) {
-      nameText = `[${currentTupleIndex + 1}/${tuples.length}] ` + nameText;
-    }
-    statusName.textContent = nameText;
-    statusInfo.textContent = 'Zoom: 1.0×';
-
-    // Force layout recalculation
-    const height = info.offsetHeight;
-    if (height > maxHeight) {
-      maxHeight = height;
-    }
-  }
-
-  // Also measure "not available" text
-  let notAvailText = `Modality: not available`;
-  if (isMultiTupleMode) {
-    notAvailText = `[${currentTupleIndex + 1}/${tuples.length}] ` + notAvailText;
-  }
-  statusName.textContent = notAvailText;
-  statusInfo.textContent = 'Zoom: 1.0×';
-  const notAvailHeight = info.offsetHeight;
-  if (notAvailHeight > maxHeight) {
-    maxHeight = notAvailHeight;
-  }
-
-  // Restore original text
-  statusName.textContent = originalNameText;
-  statusInfo.textContent = originalInfoText;
-
-  // Set fixed height
-  info.style.height = maxHeight + 'px';
 }
 
 // Recompute info bar height on window resize
@@ -2721,6 +2830,10 @@ function updateModalitySelector() {
     }
   });
 
+  // Scroll active button into view if selector is overflowing
+  const activeBtn = modalitySelector.querySelector('.modality-btn.active');
+  if (activeBtn) activeBtn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+
   // Update reorder button states
   reorderLeftBtn.disabled = currentModalityIndex <= 0;
   reorderRightBtn.disabled = currentModalityIndex >= modalities.length - 1;
@@ -2729,12 +2842,14 @@ function updateModalitySelector() {
 
 // Carousel functions
 async function buildCarousel() {
+  const myGenId = ++thumbnailGenId;  // Cancel any in-flight generator
   carousel.innerHTML = '';
   carousel.style.width = CAROUSEL_WIDTH + 'px';
 
   if (!isMultiTupleMode || tuples.length <= 1) {
     carousel.classList.remove('active');
     carouselResize.classList.remove('active');
+    progressContainer.classList.remove('active');
     return;
   }
 
@@ -2818,6 +2933,20 @@ async function buildCarousel() {
           e.stopPropagation();
           const ti = parseInt(thumb.dataset.tupleIndex);
           const mi = parseInt(thumb.dataset.modalityIndex);
+          if (e.ctrlKey || e.metaKey) {
+            toggleThumbSelection(ti, mi);
+            lastSelectedThumb = { tupleIdx: ti, modIdx: mi };
+            return;
+          }
+          if (e.shiftKey && lastSelectedThumb) {
+            selectThumbRange(lastSelectedThumb, { tupleIdx: ti, modIdx: mi });
+            return;
+          }
+          if (selectedThumbs.size > 0) {
+            selectedThumbs.clear();
+            updateThumbSelectionVisuals();
+          }
+          lastSelectedThumb = { tupleIdx: ti, modIdx: mi };
           goToTupleAndModality(ti, mi);
         });
 
@@ -2838,6 +2967,20 @@ async function buildCarousel() {
           e.stopPropagation();
           const ti = parseInt(placeholder.dataset.tupleIndex);
           const mi = parseInt(placeholder.dataset.modalityIndex);
+          if (e.ctrlKey || e.metaKey) {
+            toggleThumbSelection(ti, mi);
+            lastSelectedThumb = { tupleIdx: ti, modIdx: mi };
+            return;
+          }
+          if (e.shiftKey && lastSelectedThumb) {
+            selectThumbRange(lastSelectedThumb, { tupleIdx: ti, modIdx: mi });
+            return;
+          }
+          if (selectedThumbs.size > 0) {
+            selectedThumbs.clear();
+            updateThumbSelectionVisuals();
+          }
+          lastSelectedThumb = { tupleIdx: ti, modIdx: mi };
           goToTupleAndModality(ti, mi);
         });
 
@@ -2879,17 +3022,26 @@ async function buildCarousel() {
   }
 
   updateCarouselSelection();
+  updateThumbSelectionVisuals();
 
   // Generate uncached thumbnails sequentially (top to bottom)
   // Yield after each thumbnail to keep UI responsive during zoom/pan
   async function generateThumbnailsSequentially() {
     for (const { thumb, file, tupleIdx, modIdx, cacheKey } of thumbElements) {
+      // Stop if a newer buildCarousel call has started
+      if (myGenId !== thumbnailGenId) return;
+
       // Yield before each thumbnail to allow UI updates
       await new Promise(resolve => setTimeout(resolve, 0));
 
+      // Re-check after yield (buildCarousel may have been called during the yield)
+      if (myGenId !== thumbnailGenId) return;
+
       try {
         const dataUrl = await generateThumbnail(file, CAROUSEL_THUMB_SIZE * 2);
+        // Cache the result even if cancelled (avoids re-generating next time)
         thumbnailCache.set(cacheKey, dataUrl);
+        if (myGenId !== thumbnailGenId) return;
         thumb.src = dataUrl;
         loadedThumbs++;
 
@@ -2902,8 +3054,10 @@ async function buildCarousel() {
       }
     }
 
-    // Done - hide progress bar
-    progressContainer.classList.remove('active');
+    // Only hide progress bar if we're still the active generator
+    if (myGenId === thumbnailGenId) {
+      progressContainer.classList.remove('active');
+    }
   }
 
   if (thumbElements.length > 0) {
@@ -2958,6 +3112,7 @@ function updateCarouselSelection() {
   });
 
   scrollCarouselToCurrentTuple();
+  updateThumbSelectionVisuals();
 }
 
 function scrollCarouselToCurrentTuple() {
@@ -3022,6 +3177,7 @@ function render() {
       nameText = `[${currentTupleIndex + 1}/${tuples.length}] ` + nameText;
     }
     statusName.textContent = nameText;
+    statusName.title = nameText;
     statusInfo.textContent = `Zoom: ${zoom.toFixed(1)}×`;
 
     // Draw placeholder on canvas
@@ -3061,6 +3217,7 @@ function render() {
     nameText = `[${currentTupleIndex + 1}/${tuples.length}] ` + nameText;
   }
   statusName.textContent = nameText;
+  statusName.title = nameText;
   statusInfo.textContent = `Zoom: ${zoom.toFixed(1)}×`;
 
   // Use requestAnimationFrame to ensure layout is updated before measuring
@@ -3133,6 +3290,230 @@ function renderThumbnail(img, imgW, imgH, viewerW, viewerH, baseScale) {
     thumbViewport.style.top = Math.max(0, vpY) + 'px';
     thumbViewport.style.width = Math.min(vpW, thumbW - Math.max(0, vpX)) + 'px';
     thumbViewport.style.height = Math.min(vpH, thumbH - Math.max(0, vpY)) + 'px';
+  }
+}
+
+// =========================================================================
+// Multi-select & Clipboard Copy
+// =========================================================================
+
+function toggleThumbSelection(tupleIdx, modIdx) {
+  const key = `${tupleIdx}:${modIdx}`;
+  if (selectedThumbs.has(key)) {
+    selectedThumbs.delete(key);
+  } else {
+    selectedThumbs.add(key);
+  }
+  updateThumbSelectionVisuals();
+}
+
+function selectThumbRange(from, to) {
+  const minTuple = Math.min(from.tupleIdx, to.tupleIdx);
+  const maxTuple = Math.max(from.tupleIdx, to.tupleIdx);
+  const minMod = Math.min(from.modIdx, to.modIdx);
+  const maxMod = Math.max(from.modIdx, to.modIdx);
+  for (let ti = minTuple; ti <= maxTuple; ti++) {
+    for (let mi = minMod; mi <= maxMod; mi++) {
+      selectedThumbs.add(`${ti}:${mi}`);
+    }
+  }
+  updateThumbSelectionVisuals();
+}
+
+function updateThumbSelectionVisuals() {
+  const currentKey = `${currentTupleIndex}:${currentModalityIndex}`;
+  const allThumbs = carousel.querySelectorAll('.carousel-thumb');
+  allThumbs.forEach(thumb => {
+    const ti = thumb.dataset.tupleIndex;
+    const mi = thumb.dataset.modalityIndex;
+    if (ti === undefined || mi === undefined) return;
+    const key = `${ti}:${mi}`;
+    if (selectedThumbs.has(key) || key === currentKey) {
+      thumb.classList.add('copy-selected');
+    } else {
+      thumb.classList.remove('copy-selected');
+    }
+  });
+}
+
+async function copySelectedImages() {
+  try {
+    const clipboardItems = [];
+
+    // Always include current image + any explicitly selected thumbs
+    const addedKeys = new Set();
+
+    // Current image first
+    const currentImage = images[currentModalityIndex];
+    if (currentImage) {
+      const blob = await imageObjToClipboardBlob(currentImage);
+      if (blob) clipboardItems.push(new ClipboardItem({ 'image/png': blob }));
+    }
+    addedKeys.add(`${currentTupleIndex}:${currentModalityIndex}`);
+
+    // Explicitly selected thumbs
+    for (const key of selectedThumbs) {
+      if (addedKeys.has(key)) continue;
+      addedKeys.add(key);
+      const [ti, mi] = key.split(':').map(Number);
+      const tuple = tuples[ti];
+      if (!tuple || !tuple.imageData) continue;
+      const modalityName = modalities[mi];
+      const imgData = tuple.imageData.find(d => d.modality === modalityName);
+      if (!imgData) continue;
+      const blob = await imageFileToClipboardBlob(imgData.file);
+      if (blob) clipboardItems.push(new ClipboardItem({ 'image/png': blob }));
+    }
+
+    if (clipboardItems.length === 0) return;
+
+    await navigator.clipboard.write(clipboardItems);
+    showCopyToast(`Copied ${clipboardItems.length} image${clipboardItems.length > 1 ? 's' : ''}`);
+  } catch (err) {
+    console.error('Copy to clipboard failed:', err);
+    // Try single image fallback if multi-copy failed
+    if (selectedThumbs.size > 1) {
+      try {
+        const firstKey = selectedThumbs.values().next().value;
+        const [ti, mi] = firstKey.split(':').map(Number);
+        const tuple = tuples[ti];
+        if (tuple && tuple.imageData) {
+          const imgData = tuple.imageData.find(d => d.modality === modalities[mi]);
+          if (imgData) {
+            const blob = await imageFileToClipboardBlob(imgData.file);
+            if (blob) {
+              await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+              showCopyToast('Copied 1 image (multi-copy not supported)');
+              return;
+            }
+          }
+        }
+      } catch (err2) {
+        // fall through to error toast
+      }
+    }
+    showCopyToast('Copy failed');
+  }
+}
+
+async function imageFileToClipboardBlob(file) {
+  const loaded = await loadImage(file);
+  const c = document.createElement('canvas');
+  c.width = loaded.width;
+  c.height = loaded.height;
+  const cCtx = c.getContext('2d');
+  cCtx.drawImage(loaded.img, 0, 0);
+  if (loaded.url) URL.revokeObjectURL(loaded.url);
+  return new Promise(resolve => c.toBlob(resolve, 'image/png'));
+}
+
+async function imageObjToClipboardBlob(imageObj) {
+  const c = document.createElement('canvas');
+  c.width = imageObj.width;
+  c.height = imageObj.height;
+  const cCtx = c.getContext('2d');
+  cCtx.drawImage(imageObj.img, 0, 0);
+  return new Promise(resolve => c.toBlob(resolve, 'image/png'));
+}
+
+let copyToastEl = null;
+let copyToastTimeout = null;
+
+function showCopyToast(message) {
+  if (!copyToastEl) {
+    copyToastEl = document.createElement('div');
+    copyToastEl.id = 'copy-toast';
+    viewer.appendChild(copyToastEl);
+  }
+  copyToastEl.textContent = message;
+  copyToastEl.classList.add('visible');
+  clearTimeout(copyToastTimeout);
+  copyToastTimeout = setTimeout(() => {
+    copyToastEl.classList.remove('visible');
+  }, 1500);
+}
+
+async function saveSelectedToFolder() {
+  if (!rootDirHandle) {
+    showCopyToast('Only available in directory mode');
+    return;
+  }
+
+  // Gather images to save: selected thumbs + current image (always included)
+  const imagesToSave = [];
+  const addedKeys = new Set();
+
+  // Always include current image
+  const currentKey = `${currentTupleIndex}:${currentModalityIndex}`;
+  addedKeys.add(currentKey);
+  {
+    const tuple = tuples[currentTupleIndex];
+    if (tuple && tuple.imageData) {
+      const modalityName = modalities[currentModalityIndex];
+      const imgData = tuple.imageData.find(d => d.modality === modalityName);
+      if (imgData) {
+        imagesToSave.push({ file: imgData.file, tupleName: tuple.name, modality: modalityName });
+      }
+    }
+  }
+
+  // Add explicitly selected thumbs
+  for (const key of selectedThumbs) {
+    if (addedKeys.has(key)) continue;
+    addedKeys.add(key);
+    const [ti, mi] = key.split(':').map(Number);
+    const tuple = tuples[ti];
+    if (!tuple || !tuple.imageData) continue;
+    const modalityName = modalities[mi];
+    const imgData = tuple.imageData.find(d => d.modality === modalityName);
+    if (!imgData) continue;
+    imagesToSave.push({ file: imgData.file, tupleName: tuple.name, modality: modalityName });
+  }
+
+  if (imagesToSave.length === 0) return;
+
+  try {
+    let folderName;
+    let selDir;
+    if (selectionDirHandle) {
+      // Reuse existing selection folder detected on load
+      folderName = selectionDirName;
+      selDir = selectionDirHandle;
+    } else {
+      // Find a unique folder name: selection, selection_1, selection_2, ...
+      folderName = 'selection';
+      let n = 0;
+      while (true) {
+        try {
+          await rootDirHandle.getDirectoryHandle(folderName, { create: false });
+          n++;
+          folderName = `selection_${n}`;
+        } catch {
+          break;
+        }
+      }
+      selDir = await rootDirHandle.getDirectoryHandle(folderName, { create: true });
+      // Remember for subsequent saves in this session
+      selectionDirHandle = selDir;
+      selectionDirName = folderName;
+    }
+    let saved = 0;
+
+    for (const item of imagesToSave) {
+      const filename = `${item.tupleName}_${item.modality}.${item.file.name.split('.').pop()}`;
+      const fileHandle = await selDir.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      // Read original file data (preserve format, no re-encoding)
+      const blob = item.file instanceof File ? item.file : await item.file.getFile?.() || item.file;
+      await writable.write(blob);
+      await writable.close();
+      saved++;
+    }
+
+    showCopyToast(`Saved ${saved} image${saved > 1 ? 's' : ''} to ${folderName}/`);
+  } catch (err) {
+    console.error('Save to selection failed:', err);
+    showCopyToast('Save failed: ' + err.message);
   }
 }
 
@@ -4086,6 +4467,20 @@ document.addEventListener('keydown', (e) => {
 
   if (modalities.length === 0) return;
 
+  // Ctrl+C: copy images to clipboard
+  if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC') {
+    e.preventDefault();
+    copySelectedImages();
+    return;
+  }
+
+  // Alt+S: save selected images to selection/ folder
+  if (e.altKey && e.code === 'KeyS') {
+    e.preventDefault();
+    saveSelectedToFolder();
+    return;
+  }
+
   // Crop mode key interception
   if (cropMode && handleCropKeyDown(e)) return;
 
@@ -4106,6 +4501,7 @@ document.addEventListener('keydown', (e) => {
       if (currentModalityIndex < modalities.length - 1) {
         previousModalityIndex = currentModalityIndex;
         currentModalityIndex++;
+        lastSelectedThumb = { tupleIdx: currentTupleIndex, modIdx: currentModalityIndex };
         render();
       }
       break;
@@ -4114,6 +4510,7 @@ document.addEventListener('keydown', (e) => {
       if (currentModalityIndex > 0) {
         previousModalityIndex = currentModalityIndex;
         currentModalityIndex--;
+        lastSelectedThumb = { tupleIdx: currentTupleIndex, modIdx: currentModalityIndex };
         render();
       }
       break;
@@ -4133,7 +4530,9 @@ document.addEventListener('keydown', (e) => {
         if (isLoadingTuple || (e.repeat && now - lastKeyNavTime < KEY_NAV_THROTTLE)) break;
         lastKeyNavTime = now;
         isLoadingTuple = true;
-        loadTuple(currentTupleIndex - 1).finally(() => { isLoadingTuple = false; });
+        loadTuple(currentTupleIndex - 1).then(() => {
+          lastSelectedThumb = { tupleIdx: currentTupleIndex, modIdx: currentModalityIndex };
+        }).finally(() => { isLoadingTuple = false; });
       }
       break;
     case 'ArrowDown':
@@ -4144,7 +4543,9 @@ document.addEventListener('keydown', (e) => {
         if (isLoadingTuple || (e.repeat && now2 - lastKeyNavTime < KEY_NAV_THROTTLE)) break;
         lastKeyNavTime = now2;
         isLoadingTuple = true;
-        loadTuple(currentTupleIndex + 1).finally(() => { isLoadingTuple = false; });
+        loadTuple(currentTupleIndex + 1).then(() => {
+          lastSelectedThumb = { tupleIdx: currentTupleIndex, modIdx: currentModalityIndex };
+        }).finally(() => { isLoadingTuple = false; });
       }
       break;
     case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4':
@@ -4185,6 +4586,11 @@ document.addEventListener('keydown', (e) => {
         cancelLoad();
         break;
       }
+      if (selectedThumbs.size > 0) {
+        selectedThumbs.clear();
+        updateThumbSelectionVisuals();
+        break;
+      }
       // If already reset, go back to dropzone
       if (isReset && zoom === 1 && panX === 0 && panY === 0) {
         resetToDropzone();
@@ -4208,7 +4614,8 @@ viewer.addEventListener('wheel', (e) => {
   }
 
   e.preventDefault();
-  const delta = e.deltaY > 0 ? 0.97 : 1.03;
+  const fast = e.altKey ? 5 : 1;
+  const delta = e.deltaY > 0 ? (1 - 0.03 * fast) : (1 + 0.03 * fast);
   const newZoom = Math.max(0.1, Math.min(50, zoom * delta));
 
   // Get mouse position relative to viewer center (accounting for carousel)
@@ -4279,7 +4686,17 @@ window.addEventListener('resize', () => {
 carousel.addEventListener('wheel', (e) => {
   e.preventDefault();
   e.stopPropagation();
-  carousel.scrollTop += e.deltaY;
+  const fast = e.altKey ? 5 : 1;
+  carousel.scrollTop += e.deltaY * fast;
+}, { passive: false });
+
+// Modality selector horizontal scrolling (convert vertical wheel to horizontal)
+modalitySelector.addEventListener('wheel', (e) => {
+  if (modalitySelector.scrollWidth > modalitySelector.clientWidth) {
+    e.preventDefault();
+    e.stopPropagation();
+    modalitySelector.scrollLeft += e.deltaY;
+  }
 }, { passive: false });
 
 // Carousel resize handle
@@ -4313,7 +4730,8 @@ document.addEventListener('mousemove', (e) => {
   if (!isResizingCarousel) return;
 
   const delta = e.clientX - resizeStartX;
-  const newWidth = Math.max(100, Math.min(500, resizeStartWidth + delta));
+  const maxWidth = Math.floor(window.innerWidth * 0.8);
+  const newWidth = Math.max(100, Math.min(maxWidth, resizeStartWidth + delta));
   CAROUSEL_WIDTH = newWidth;
   carousel.style.width = CAROUSEL_WIDTH + 'px';
   carouselResize.style.left = (CAROUSEL_WIDTH - 4) + 'px';
@@ -4321,7 +4739,12 @@ document.addEventListener('mousemove', (e) => {
   // Recalculate thumbnail size
   updateCarouselThumbSize();
 
-  // Update thumbnail sizes in DOM
+  // Update thumbnail and container sizes in DOM
+  const containers = carousel.querySelectorAll('.carousel-thumb-container');
+  containers.forEach(container => {
+    container.style.width = CAROUSEL_THUMB_SIZE + 'px';
+    container.style.height = CAROUSEL_THUMB_SIZE + 'px';
+  });
   const thumbs = carousel.querySelectorAll('.carousel-thumb');
   thumbs.forEach(thumb => {
     thumb.style.width = CAROUSEL_THUMB_SIZE + 'px';
