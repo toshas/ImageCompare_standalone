@@ -743,6 +743,8 @@ let winners = new Map();  // tupleIndex -> modalityIndex
 let votingEnabled = false;  // Only enabled in directory mode
 let rootDirHandle = null;  // Directory handle for saving results.txt (File System Access API)
 let modalityDirHandles = new Map();  // modalityName -> FileSystemDirectoryHandle
+let selectionDirHandle = null;  // Existing selection folder detected on load
+let selectionDirName = null;    // Name of the detected selection folder
 let pollTimer = null;  // Interval ID for file polling
 
 // Crop tool state
@@ -1040,11 +1042,45 @@ async function handleSingleDirectoryModern(dirHandle) {
   // Read files from each subdirectory
   const filesByDir = new Map();
   modalityDirHandles = new Map();
+  const subdirHandles = new Map(); // name -> dirHandle
   for (const subdir of subdirs) {
     const files = await readDirectoryModern(subdir);
     if (files.length > 0) {
       filesByDir.set(subdir.name, files);
       modalityDirHandles.set(subdir.name, subdir);
+      subdirHandles.set(subdir.name, subdir);
+    }
+  }
+
+  // Detect existing selection folders (selection, selection_1, selection_2, ...)
+  // If a selection folder's image count doesn't match the other modalities, treat it
+  // as a save target for Alt+S rather than a modality
+  selectionDirHandle = null;
+  selectionDirName = null;
+  const selectionPattern = /^selection(?:_\d+)?$/i;
+  const selectionCandidates = [];
+  const nonSelectionCounts = [];
+  for (const [name, files] of filesByDir) {
+    if (selectionPattern.test(name)) {
+      selectionCandidates.push({ name, count: files.length });
+    } else {
+      nonSelectionCounts.push(files.length);
+    }
+  }
+  if (selectionCandidates.length > 0 && nonSelectionCounts.length >= 2) {
+    // Use median of non-selection folders as reference
+    nonSelectionCounts.sort((a, b) => a - b);
+    const median = nonSelectionCounts[Math.floor(nonSelectionCounts.length / 2)];
+    // A selection folder is one with less than half the median count
+    for (const cand of selectionCandidates) {
+      if (cand.count < median * 0.5) {
+        // Pick the highest-numbered selection folder as the active one
+        selectionDirHandle = subdirHandles.get(cand.name);
+        selectionDirName = cand.name;
+        filesByDir.delete(cand.name);
+        modalityDirHandles.delete(cand.name);
+        if (DEBUG) console.log(`[selection] Detected "${cand.name}" as selection folder (${cand.count} files vs median ${median})`);
+      }
     }
   }
 
@@ -3363,21 +3399,30 @@ async function saveSelectedToFolder() {
   if (imagesToSave.length === 0) return;
 
   try {
-    // Find a unique folder name: selection, selection_1, selection_2, ...
-    let folderName = 'selection';
-    let n = 0;
-    while (true) {
-      try {
-        await rootDirHandle.getDirectoryHandle(folderName, { create: false });
-        // Exists — try next number
-        n++;
-        folderName = `selection_${n}`;
-      } catch {
-        break; // Doesn't exist — use this name
+    let folderName;
+    let selDir;
+    if (selectionDirHandle) {
+      // Reuse existing selection folder detected on load
+      folderName = selectionDirName;
+      selDir = selectionDirHandle;
+    } else {
+      // Find a unique folder name: selection, selection_1, selection_2, ...
+      folderName = 'selection';
+      let n = 0;
+      while (true) {
+        try {
+          await rootDirHandle.getDirectoryHandle(folderName, { create: false });
+          n++;
+          folderName = `selection_${n}`;
+        } catch {
+          break;
+        }
       }
+      selDir = await rootDirHandle.getDirectoryHandle(folderName, { create: true });
+      // Remember for subsequent saves in this session
+      selectionDirHandle = selDir;
+      selectionDirName = folderName;
     }
-
-    const selDir = await rootDirHandle.getDirectoryHandle(folderName, { create: true });
     let saved = 0;
 
     for (const item of imagesToSave) {
