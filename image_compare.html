@@ -4633,7 +4633,8 @@ viewer.addEventListener('wheel', (e) => {
   }
 
   e.preventDefault();
-  const delta = e.deltaY > 0 ? 0.97 : 1.03;
+  const fast = e.altKey ? 5 : 1;
+  const delta = e.deltaY > 0 ? (1 - 0.03 * fast) : (1 + 0.03 * fast);
   const newZoom = Math.max(0.1, Math.min(50, zoom * delta));
 
   // Get mouse position relative to viewer center (accounting for carousel)
@@ -4704,7 +4705,8 @@ window.addEventListener('resize', () => {
 carousel.addEventListener('wheel', (e) => {
   e.preventDefault();
   e.stopPropagation();
-  carousel.scrollTop += e.deltaY;
+  const fast = e.altKey ? 5 : 1;
+  carousel.scrollTop += e.deltaY * fast;
 }, { passive: false });
 
 // Carousel resize handle
