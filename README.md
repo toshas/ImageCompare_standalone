@@ -1,72 +1,56 @@
-# Image Compare
+# ImageCompare (standalone)
 
-A standalone single-file HTML tool for comparing multiple images (modalities) with synchronized zoom and pan.
+A single self-contained HTML file for comparing image sets across modalities in a browser — no
+install, no server, no network.
 
-## Features
+> **Generated file. Do not push to this repository, ever.**
+> `image_compare.html` is built from
+> [toshas/ImageCompare_vscode](https://github.com/toshas/ImageCompare_vscode) on every push to its
+> `main` branch. This repository is a *build artifact* of that one: anything committed here is
+> overwritten by the next build without review.
+>
+> **Bugs, feature requests and pull requests belong in
+> [toshas/ImageCompare_vscode](https://github.com/toshas/ImageCompare_vscode/issues)** — not here.
+> Issues opened against this repository cannot be fixed here, because the code that produced the
+> file does not live here.
 
-- **Multi-modality comparison**: Compare 2+ images with instant switching via keyboard or clicks
-- **Multi-tuple mode**: Load a folder with subdirectories (each subdirectory = one modality) to browse multiple image sets
-- **Smart matching**: Two-pass trie-based algorithm matches images across modalities by filename, even with different suffixes
-- **Synchronized viewing**: Zoom and pan are preserved when switching between modalities
-- **Thumbnail carousel**: Visual navigation with placeholder support for missing images
-- **Spacebar flip**: Hold spacebar to temporarily view previous modality (release to flip back)
-- **Crop tool**: Draw a rectangle to crop all modalities at the same coordinates, saved as `_cropNN.png` files
-- **Winner voting**: Mark the best modality per tuple, persisted to `results.txt`
-- **PowerPoint export**: Export voted tuples to `.pptx` with caption bars and crop callout overlays
-- **Live file polling**: Automatically detects new files, deletions, and renames every 2 seconds
-- **PPMX support**: Custom float32 grayscale format used in some imaging workflows
-- **Fully offline**: Zero external dependencies for core functionality (PPTX export lazy-loads pptxgenjs from CDN)
+Built from `990bc0843333442eba47b5b23a87a19981d7682a` — version `0.4.0`.
 
-## Usage
+## Use
 
-1. Open `image_compare.html` in a modern browser (Chrome recommended)
-2. Either:
-   - **Drop 2+ images** directly to compare them as a single tuple
-   - **Drop a folder** containing subdirectories (each subdirectory becomes a modality)
-   - **Click "Select Folder"** to use the file picker
+Download `image_compare.html` and open it in a browser. Pick (or drag in) a folder whose
+subdirectories each hold one modality of the same image set; files are matched into tuples by name.
 
-## Keyboard Shortcuts
+| | Chrome / Edge | Firefox / Safari |
+|---|---|---|
+| view, compare, zoom, pan | yes | yes |
+| winner voting | yes, saved to `results.txt` in the folder | in-session only |
+| crop written back to every modality | yes | no |
+| delete | yes | no |
+| PPTX export | yes | yes |
+| live folder polling (new, renamed and deleted files) | yes | no |
 
-| Key | Action |
-|-----|--------|
-| `← →` | Switch modality |
-| `↑ ↓` | Previous/next tuple |
-| `Space` | Flip to previous modality (hold) |
-| `1-9` | Jump to modality N |
-| `[ ]` | Reorder current modality left/right |
-| `Enter` | Toggle winner for current modality |
-| `Scroll` | Zoom in/out |
-| `Drag` | Pan image |
-| `C` | Toggle crop mode |
-| `Del` | Delete current tuple files |
-| `Esc` | Reset zoom (press twice to return to start screen) |
+The split is not a feature decision: writing to a folder needs the File System Access API, which
+Chrome and Edge expose and Firefox and Safari do not. Those browsers fall back to a read-only
+folder listing, so everything that would modify your files is disabled rather than silently failing.
 
-## Folder Structure for Multi-Tuple Mode
+Dragging a folder in gives a read-only session even on Chrome. Use the folder **picker** if you
+want voting, crop or delete.
 
-```
-my_images/
-├── modality_A/
-│   ├── 001_something.png
-│   ├── 002_something.png
-│   └── 003_something.png
-├── modality_B/
-│   ├── 001_other.png
-│   ├── 002_other.png
-│   └── 003_other.png
-└── modality_C/
-    ├── 001_another.png
-    └── 003_another.png  # 002 missing - will show placeholder
-```
+## Same code as the extension
 
-Images are matched across modalities using a two-pass algorithm (exact basenames first, then fuzzy trie-based matching). Missing images are handled gracefully with placeholder thumbnails.
+The matcher, viewer, voting, crop, PPTX export, deletion and polling are the *same modules* the VS
+Code extension ships — not a reimplementation. The two products differ only in what they are wired
+to: a browser's File System Access API here, the VS Code filesystem API there. A CI gate fails the
+build if either side hand-implements a decision the other shares.
 
-## Browser Compatibility
+## Changelog
 
-- Chrome/Chromium (recommended — required for File System Access API features: crop, delete, voting, PPTX export)
-- Firefox
-- Safari
-- Edge
+`CHANGELOG.md` is copied verbatim from the extension repository, so most entries describe the VS
+Code extension. Entries that touch the shared modules — matching, crop, PPTX, results, thumbnail
+ordering — apply here too; entries about VS Code panels, commands, packaging or marketplace
+publishing do not.
 
 ## License
 
-MIT
+MIT, same as the extension. See `LICENSE`.
