@@ -75,6 +75,34 @@ body {
   opacity: 0.5;
   filter: blur(2px);
 }
+/* Terminal notice for an emptied comparison; the canvas is hidden under it, never left showing a stale frame (docs/loading-architecture.md: empty-comparison-is-terminal). */
+#canvas.hidden { display: none; }
+#empty-notice {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: none;
+  max-width: 80%;
+  text-align: center;
+  z-index: 6;
+  pointer-events: none;
+}
+#empty-notice.active { display: block; }
+/* Gated on the class, like the spinner's: the offset variable outlives the carousel it was set for. */
+#viewer.has-carousel #empty-notice {
+  left: calc(50% + var(--carousel-offset, 0px) / 2);
+}
+#empty-notice-title {
+  font-size: 15px;
+  color: var(--vscode-foreground, #ccc);
+  margin-bottom: 6px;
+}
+#empty-notice-detail {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #999);
+  word-break: break-all;
+}
 
 /* Floating panel (navigator + crop) */
 #floating-panel {
@@ -624,6 +652,10 @@ body {
     <canvas id="canvas"></canvas>
     <div id="image-loader">
       <div id="loader-spinner"></div>
+    </div>
+    <div id="empty-notice">
+      <div id="empty-notice-title"></div>
+      <div id="empty-notice-detail"></div>
     </div>
     <div id="floating-panel">
       <div id="fp-header">
@@ -4232,6 +4264,7 @@ class ThumbUrlCache {
 
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   ColumnReportGate: () => (/* binding */ ColumnReportGate),
 /* harmony export */   LOAD_DEBOUNCE_MS: () => (/* binding */ LOAD_DEBOUNCE_MS),
 /* harmony export */   NEAREST_SIBLINGS: () => (/* binding */ NEAREST_SIBLINGS),
 /* harmony export */   rankCovers: () => (/* binding */ rankCovers),
@@ -4290,6 +4323,58 @@ function tupleArrivalPlan(input) {
         ? []
         : [{ modalityIndex: shown, rank: 'visible' }];
     return { now, afterDwell: siblingLoadPlan(input) };
+}
+/**
+ * When a column move reaches the host, for one panel: a picked column at once, a key-driven one on a
+ * trailing-edge dwell of `LOAD_DEBOUNCE_MS`, and never two reports for one gesture
+ * (docs/loading-architecture.md: picked-column-reports-itself).
+ */
+class ColumnReportGate {
+    timers;
+    report;
+    pending;
+    constructor(timers, report) {
+        this.timers = timers;
+        this.report = report;
+    }
+    /** A settled destination — a tile or a pill click: reported at once, and it drops a burst still waiting. */
+    picked(displayIndex) {
+        this.cancel();
+        this.report(displayIndex);
+    }
+    /** A key-driven move: keys repeat, so only the column the burst ended on is ever reported. */
+    keyed(displayIndex) {
+        this.cancel();
+        this.pending = this.timers.setTimer(() => {
+            this.pending = undefined;
+            this.report(displayIndex);
+        }, LOAD_DEBOUNCE_MS);
+    }
+    cancel() {
+        if (this.pending !== undefined)
+            this.timers.clearTimer(this.pending);
+        this.pending = undefined;
+    }
+}
+
+
+/***/ }),
+/* 6 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   emptyNotice: () => (/* binding */ emptyNotice)
+/* harmony export */ });
+// Pure (no DOM): what the viewer says once a comparison has nothing left to draw (docs/loading-architecture.md: empty-comparison-is-terminal).
+/** The terminal notice, or null while anything is still drawable — content always wins over a missing root. */
+function emptyNotice(input) {
+    if (input.tupleCount > 0 && input.modalityCount > 0)
+        return null;
+    if (input.missingRootPath !== null) {
+        return { title: 'Folder no longer exists', detail: input.missingRootPath };
+    }
+    return { title: 'Nothing left to compare', detail: 'Every image in this comparison was deleted or moved.' };
 }
 
 
@@ -4359,10 +4444,12 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _watcherLogic__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
 /* harmony import */ var _thumbUrlCache__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(4);
 /* harmony import */ var _tupleLoadPlan__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(5);
+/* harmony import */ var _emptyNotice__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(6);
 /**
  * WebView main script for ImageCompare
  * Handles all UI rendering and user interactions
  */
+
 
 
 
@@ -4417,6 +4504,9 @@ const closeHelpBtn = document.getElementById('close-help-btn');
 const reorderLeftBtn = document.getElementById('reorder-left');
 const reorderRightBtn = document.getElementById('reorder-right');
 const imageLoaderEl = document.getElementById('image-loader');
+const emptyNoticeEl = document.getElementById('empty-notice');
+const emptyNoticeTitleEl = document.getElementById('empty-notice-title');
+const emptyNoticeDetailEl = document.getElementById('empty-notice-detail');
 // Constants
 const THUMB_MAX_SIZE = 150;
 // Placeholder image for missing/error thumbnails (simple gray X)
@@ -4446,6 +4536,7 @@ let config = { thumbnailSize: 100, prefetchCount: 3, keepZoomOnTupleChange: fals
 let currentTupleIndex = asTuple(0);
 let currentModalityIndex = asDisplay(0);
 let previousModalityIndex = asDisplay(0);
+let rootMissingPath = null; // the comparison's folder, once the host says it is gone (docs/file-watching.md: root-loss-reported-as-an-edge)
 let images = []; // Current tuple's loaded images (may have undefined slots)
 let loadedTuples = new Map();
 // "tupleIdx-modIdx" -> object url (or the ✕ placeholder data url): it owns every url a row shows (docs/loading-architecture.md: thumb-url-owned-by-cache).
@@ -4742,6 +4833,11 @@ window.addEventListener('message', (event) => {
         case 'modalityRemoved':
             handleModalityRemoved(message);
             break;
+        case 'rootMissing':
+            // Only the notice's wording depends on this; a re-render refines or clears it (docs/file-watching.md: root-loss-reported-as-an-edge).
+            rootMissingPath = message.path;
+            render();
+            break;
         case 'winnerUpdated':
             handleWinnerUpdated(message);
             break;
@@ -4822,6 +4918,7 @@ function handleInit(message) {
     loadedTuples.clear();
     thumbnailUrls.clear();
     hiddenModalities.clear();
+    rootMissingPath = null; // a fresh comparison inherits no previous root's verdict
     // Index-keyed and every index just changed identity; a stale bit would cost a slot its one retry.
     decodeRetried.clear();
     requestedSlots.clear(); // same index-shift reason: a stale mark would suppress the slot's re-request
@@ -5131,12 +5228,12 @@ function handleTupleDeleted(message) {
     // Always update multi-tuple mode and rebuild carousel
     isMultiTupleMode = tuples.length > 1;
     buildCarousel();
-    // Load current tuple
-    if (tuples.length > 0) {
-        loadTuple(currentTupleIndex);
-    }
+    // Unconditional: at zero rows loadTuple raises the notice instead, and nothing else would (docs/loading-architecture.md: empty-comparison-is-terminal).
+    loadTuple(currentTupleIndex);
 }
 function handleTupleAdded(message) {
+    // A row arriving into an empty comparison becomes the view; nothing else re-aims it (docs/loading-architecture.md: empty-comparison-is-terminal).
+    const wasEmpty = tuples.length === 0;
     // decodeRetried is index-keyed and an insertion shifts every later index; clearing is cheaper than re-indexing.
     decodeRetried.clear();
     requestedSlots.clear(); // same index-shift reason: a stale mark would suppress the slot's re-request
@@ -5182,8 +5279,15 @@ function handleTupleAdded(message) {
     }
     // Only the new row needs data; shifted rows repaint from the re-indexed map (docs/tuple-matching.md: revalidate-slot-before-write).
     vscode.postMessage({ type: 'requestThumbnails', tupleIndices: [message.tupleIndex] });
+    // The increment above aimed past the only row there is; the returning content takes the view.
+    if (wasEmpty) {
+        currentTupleIndex = asTuple(0);
+        loadTuple(currentTupleIndex);
+    }
 }
 function handleModalityAdded(message) {
+    // A column arriving into a comparison with none becomes the view, as a row does (docs/loading-architecture.md: empty-comparison-is-terminal).
+    const hadNoColumns = modalities.length === 0;
     // The user's arrangement survives the insert; the new column lands beside its original-order predecessor (docs/tuple-matching.md: rearrangement-survives-insert).
     const inserted = (0,_modalityVisibility__WEBPACK_IMPORTED_MODULE_1__.displayOrderAfterInsert)(modalityOrder, message.modalityIndex);
     const displayPos = inserted.displayPos;
@@ -5241,6 +5345,11 @@ function handleModalityAdded(message) {
         type: 'requestThumbnails',
         tupleIndices: Array.from({ length: tuples.length }, (_, i) => i)
     });
+    // The shift above aimed past the only column there is; the returning content takes the view.
+    if (hadNoColumns) {
+        currentModalityIndex = asDisplay(0);
+        previousModalityIndex = asDisplay(0);
+    }
     // The re-indexed cache serves every old slot; loadTuple requests only the new column's (docs/file-watching.md: mutation-never-strands-view).
     loadTuple(currentTupleIndex);
 }
@@ -5380,6 +5489,9 @@ function requestSlot(tupleIndex, modalityIndex, rank, forceReload = false) {
     });
 }
 function loadTuple(index) {
+    // Ahead of the range guard, which at zero rows returns before anything can raise the notice; also the single site that clears it (docs/loading-architecture.md: empty-comparison-is-terminal).
+    if (applyEmptyNotice())
+        return;
     if (index < 0 || index >= tuples.length)
         return;
     // Only an actual tuple change resets the view — re-index paths reload the same tuple and must not.
@@ -5470,7 +5582,7 @@ function visibleCarouselRows() {
         return 1;
     return Math.max(1, Math.ceil(carouselEl.clientHeight / rowH));
 }
-/** Reports the strip the moment a click picks a column — `tupleFullyLoaded` waits for a whole tuple, which on a wide cold session is far away (docs/loading-architecture.md: click-reports-its-column). */
+/** Reports the strip the moment the user picks a column — `tupleFullyLoaded` waits for a whole tuple, which on a wide cold session is far away (docs/loading-architecture.md: picked-column-reports-itself). */
 function postCurrentModality(displayModalityIndex) {
     vscode.postMessage({
         type: 'setCurrentModality',
@@ -5480,6 +5592,8 @@ function postCurrentModality(displayModalityIndex) {
         visibleRows: visibleCarouselRows()
     });
 }
+/** Every column report goes through this one gate, clicks and keys alike (docs/loading-architecture.md: picked-column-reports-itself). */
+const columnReport = new _tupleLoadPlan__WEBPACK_IMPORTED_MODULE_4__.ColumnReportGate({ setTimer: (run, ms) => window.setTimeout(run, ms), clearTimer: h => window.clearTimeout(h) }, d => postCurrentModality(asDisplay(d)));
 /** Reports the tuple as loaded *and* the strip as displayed — prefetch scopes its wave to the column on screen (docs/loading-architecture.md: prefetch-scoped-to-the-visible-column), the sweep aims its cross at it (docs/loading-architecture.md: sweep-cross-then-row-major). */
 function postTupleFullyLoaded(tupleIndex) {
     vscode.postMessage({
@@ -5813,7 +5927,7 @@ function handleCarouselClick(e) {
     }
     const img = target.closest('.carousel-thumb');
     if (img) {
-        // Every thumb is stamped at creation and buildCarousel() resets the pool on a column-count change, so this is total; a silent 0 here is the column-0 aim bug (docs/loading-architecture.md: click-reports-its-column).
+        // Every thumb is stamped at creation and buildCarousel() resets the pool on a column-count change, so this is total; a silent 0 here is the column-0 aim bug (docs/loading-architecture.md: picked-column-reports-itself).
         const clicked = parseInt(img.dataset.displayIndex ?? '', 10);
         if (Number.isInteger(clicked))
             goToTupleAndModality(tupleIdx, asDisplay(clicked));
@@ -5833,8 +5947,8 @@ function scrollCarouselToCurrentTuple() {
     applyCarouselOffset(Math.round(target / rowH) * rowH);
 }
 function goToTupleAndModality(tupleIdx, modalityIdx) {
-    // Unconditional: the clicked column is the sweep's aim even when it is the one already on screen, which no report may have carried yet (docs/loading-architecture.md: click-reports-its-column).
-    postCurrentModality(modalityIdx);
+    // Unconditional: the clicked column is the sweep's aim even when it is the one already on screen, which no report may have carried yet (docs/loading-architecture.md: picked-column-reports-itself).
+    columnReport.picked(modalityIdx);
     if (tupleIdx === currentTupleIndex) {
         if (modalityIdx !== currentModalityIndex) {
             previousModalityIndex = currentModalityIndex;
@@ -5901,6 +6015,7 @@ function buildModalitySelector() {
                 previousModalityIndex = currentModalityIndex;
                 currentModalityIndex = asDisplay(displayIdx);
                 render();
+                columnReport.picked(currentModalityIndex);
             }
         });
         modalitySelectorEl.appendChild(btn);
@@ -6018,8 +6133,34 @@ function moveCurrentModality(direction) {
         buildCarousel();
     }
     render();
+    // A reorder moves no column but re-permutes the strip the aim ranks over (docs/loading-architecture.md: picked-column-reports-itself).
+    columnReport.keyed(currentModalityIndex);
+}
+/**
+ * Show or clear the terminal notice for a comparison with nothing to draw; returns true when it is
+ * showing, and it is the only site that hides the canvas (docs/loading-architecture.md: empty-comparison-is-terminal).
+ */
+function applyEmptyNotice() {
+    const notice = (0,_emptyNotice__WEBPACK_IMPORTED_MODULE_5__.emptyNotice)({ tupleCount: tuples.length, modalityCount: modalities.length, missingRootPath: rootMissingPath });
+    emptyNoticeEl.classList.toggle('active', notice !== null);
+    canvasEl.classList.toggle('hidden', notice !== null);
+    if (!notice)
+        return false;
+    emptyNoticeTitleEl.textContent = notice.title;
+    emptyNoticeDetailEl.textContent = notice.detail;
+    // Terminal: the spinner goes out and no request is issued, so nothing can leave one spinning forever.
+    imageLoaderEl.classList.remove('active');
+    canvasEl.classList.remove('preview');
+    // The minimap is the second surface carrying that same frame; hiding only the canvas leaves the preview on screen (docs/loading-architecture.md: empty-comparison-is-terminal).
+    thumbCtx.clearRect(0, 0, thumbCanvasEl.width, thumbCanvasEl.height);
+    thumbViewportEl.style.display = 'none';
+    updateStatus(notice.title, notice.detail);
+    return true;
 }
 function render() {
+    // Nothing to draw: a notice, never a spinner over the last frame (docs/loading-architecture.md: empty-comparison-is-terminal).
+    if (applyEmptyNotice())
+        return;
     // Re-derive from the cache; module-level `images` holds a previous tuple's frames (docs/loading-architecture.md: render-from-loaded-tuples).
     const cached = loadedTuples.get(currentTupleIndex);
     images = cached && cached.length > 0
@@ -6188,6 +6329,7 @@ function handleKeyDown(e) {
                 previousModalityIndex = currentModalityIndex;
                 currentModalityIndex = asDisplay(target);
                 render();
+                columnReport.keyed(currentModalityIndex);
             }
             break;
         }
@@ -6226,6 +6368,7 @@ function handleKeyDown(e) {
                 previousModalityIndex = currentModalityIndex;
                 currentModalityIndex = asDisplay(idx);
                 render();
+                columnReport.keyed(currentModalityIndex);
             }
             break;
         case 'Escape':
