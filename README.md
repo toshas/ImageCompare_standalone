@@ -14,7 +14,7 @@ install, no server, no network.
 > Issues opened against this repository cannot be fixed here, because the code that produced the
 > file does not live here.
 
-Built from `a8ce1c9475f9ff3a557820ef1207e18ce75ae8dc` — version `0.4.0`.
+Built from `25893efc4a899e0c4ec0916a558d5a760be65d6b` — version `0.4.1`.
 
 ## Use
 

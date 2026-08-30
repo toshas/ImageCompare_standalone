@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ImageCompare 0.4.0</title>
+<title>ImageCompare 0.4.1</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -3182,7 +3182,7 @@ body {
       config: { thumbnailSize: THUMBNAIL_SIZE, prefetchCount: PREFETCH_COUNT, keepZoomOnTupleChange: false },
       votingEnabled,
       labelsExplicit: false,
-      version: "0.4.0"
+      version: "0.4.1"
     }));
     void generateAllThumbnails(s);
   }
@@ -3548,7 +3548,7 @@ body {
           Scroll: zoom | Drag: pan | Esc: reset
         </p>
         <div id="ic-error"></div>
-        <div class="ic-version">v${"0.4.0"} \u2014 standalone build</div>
+        <div class="ic-version">v${"0.4.1"} \u2014 standalone build</div>
       </div>
     </div>`;
     document.body.appendChild(el);
@@ -3597,7 +3597,7 @@ body {
   }
   buildLanding();
   var seam = {
-    version: "0.4.0",
+    version: "0.4.1",
     // Injectable so tests can shrink the wait; read each time the poll timer is armed.
     pollIntervalMs: 4e3,
     open: (handle) => openRoot(createFsaBackend(handle)),
