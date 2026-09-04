@@ -359,6 +359,53 @@ body {
   pointer-events: none;
 }
 #copy-toast.visible { opacity: 1; }
+/* The comparison's own context menu: one implementation, so the standalone offers exactly what the panel does (docs/standalone.md: affordances-rendered-by-the-webview). */
+#context-menu {
+  position: fixed;
+  z-index: 202;
+  display: none;
+  min-width: 150px;
+  padding: 4px 0;
+  border-radius: 5px;
+  background: var(--vscode-menu-background, #252526);
+  border: 1px solid var(--vscode-menu-border, #454545);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+#context-menu.visible { display: block; }
+.context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 5px 22px 5px 12px;
+  border: none;
+  background: none;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--vscode-menu-foreground, #ccc);
+}
+.context-menu-item:hover {
+  background: var(--vscode-menu-selectionBackground, #04395e);
+  color: var(--vscode-menu-selectionForeground, #fff);
+}
+.context-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--vscode-menu-separatorBackground, #454545);
+}
+#copy-toast.has-action { pointer-events: auto; }
+#copy-toast.error { color: var(--vscode-errorForeground, #f66); }
+#notice-action {
+  margin-left: 10px;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  color: var(--vscode-textLink-foreground, #4daafc);
+}
 .modality-btn.active {
   opacity: 1;
   box-shadow: 0 0 0 2px var(--vscode-focusBorder, #fff);
@@ -688,6 +735,7 @@ body {
   </div>
   <div id="pill-tooltip"></div>
   <div id="copy-toast"></div>
+  <div id="context-menu"></div>
 
   <div id="help-modal">
     <div class="modal-content">
@@ -703,9 +751,9 @@ body {
         <tr><td>Shift+Scroll</td><td>On the film strip: scroll the film strip sideways</td></tr>
         <tr><td>Drag</td><td>Pan image</td></tr>
         <tr><td>Click</td><td>Film-strip tile: go to it; its corner circle: toggle winner</td></tr>
-        <tr><td>Right-click</td><td>Copy path / reveal / copy image; hide or show a modality (on its pill)</td></tr>
+        <tr id="help-row-contextmenu"><td>Right-click</td><td>On the image or a pill: <span id="help-contextmenu-items"></span></td></tr>
         <tr><td>Ctrl/Cmd+C</td><td>Copy current image (when no text is selected)</td></tr>
-        <tr><td>Ctrl/Cmd+S</td><td>Save Session As — keep a copy of this comparison</td></tr>
+        <tr id="help-row-savesession"><td>Ctrl/Cmd+S</td><td>Save Session As — keep a copy of this comparison</td></tr>
         <tr><td>C</td><td>Toggle crop mode</td></tr>
         <tr><td>2×-click</td><td>On a crop edge handle, square the crop toward that edge (in crop mode)</td></tr>
         <tr><td>Del / Backspace</td><td>Delete current tuple files (permanent!)</td></tr>
@@ -1912,7 +1960,8 @@ body {
       winners: winnersRecord,
       votingEnabled: args.votingEnabled,
       labelsExplicit: args.labelsExplicit,
-      version: args.version
+      version: args.version,
+      capabilities: args.capabilities
     };
   }
 
@@ -2341,14 +2390,9 @@ body {
       if (io.isCancelled?.(err)) return;
       const errorMsg = err instanceof Error ? err.message : String(err);
       io.post({ type: "pptxError", error: errorMsg });
-      io.onError?.(errorMsg);
       return;
     }
     io.post({ type: "pptxComplete", path: savedPath });
-    try {
-      await io.onSaved?.(savedPath);
-    } catch {
-    }
   }
   function nextPptxName(existingNames) {
     let pptxNum = 1;
@@ -3164,6 +3208,24 @@ body {
       isCancelled: (err) => err instanceof TaskCancelled || state !== s
     });
   }
+  async function handleMenuAction(s, action, ctx) {
+    if (action !== "copyPath") return;
+    const modality = s.scan.modalities[ctx.modalityIndex];
+    if (modality === void 0) return;
+    const tuple = ctx.section === "image" ? s.scan.tuples[ctx.tupleIndex] : void 0;
+    const img = tuple ? findImageForModality(tuple, modality) : void 0;
+    const target = img ? img.uri.path : `${s.basePath}/${modality}`;
+    try {
+      await navigator.clipboard.writeText(target);
+      postNotice({ kind: "pathCopied" });
+    } catch (e) {
+      postNotice({ kind: "copyPathFailed", error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  function postNotice(event) {
+    const msg = { type: "notice", event };
+    post(msg);
+  }
   async function sendInit(s) {
     const votingEnabled = s.fs.writable;
     if (votingEnabled) {
@@ -3182,7 +3244,9 @@ body {
       config: { thumbnailSize: THUMBNAIL_SIZE, prefetchCount: PREFETCH_COUNT, keepZoomOnTupleChange: false },
       votingEnabled,
       labelsExplicit: false,
-      version: "0.4.1"
+      version: "0.4.1",
+      // No file tree to reveal into and no session file to copy; text clipboard is the browser's (docs/standalone.md: affordances-rendered-by-the-webview).
+      capabilities: { revealInExplorer: false, copyTextToClipboard: true, saveSessionAs: false }
     }));
     void generateAllThumbnails(s);
   }
@@ -3225,7 +3289,11 @@ body {
         s.sweepAim.noteStrip(message);
         break;
       }
+      case "menuAction":
+        await handleMenuAction(s, message.action, message.ctx);
+        break;
       case "saveSessionAs":
+      case "revealPath":
       case "log":
         break;
     }
@@ -4378,6 +4446,159 @@ function emptyNotice(input) {
 }
 
 
+/***/ }),
+/* 7 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   NO_HOST_CAPABILITIES: () => (/* binding */ NO_HOST_CAPABILITIES),
+/* harmony export */   REVEAL_LABEL: () => (/* binding */ REVEAL_LABEL),
+/* harmony export */   buildContextMenu: () => (/* binding */ buildContextMenu),
+/* harmony export */   contextMenuHelpText: () => (/* binding */ contextMenuHelpText)
+/* harmony export */ });
+/** Pure (no vscode, no DOM): which items the in-comparison context menu offers, and where each runs (docs/standalone.md: affordances-rendered-by-the-webview). */
+/** An `init` that names no capabilities claims none — an unstated capability is absent, never assumed. */
+const NO_HOST_CAPABILITIES = {
+    revealInExplorer: false,
+    copyTextToClipboard: false,
+    saveSessionAs: false,
+};
+/** The reveal action's one label, shared with the notice channel so the item text has a single definition. */
+const REVEAL_LABEL = 'Reveal in Explorer';
+/** The menu for one target: local items always, host items only where the host says it can serve them. */
+function buildContextMenu(ctx, caps) {
+    const items = [];
+    if (ctx.section === 'image') {
+        items.push({ id: 'copyImage', label: 'Copy Image', group: 1, local: true });
+    }
+    if (caps.copyTextToClipboard) {
+        items.push({ id: 'copyPath', label: 'Copy Path', group: 1, local: false });
+    }
+    if (caps.revealInExplorer) {
+        items.push({ id: 'revealInExplorer', label: REVEAL_LABEL, group: 1, local: false });
+    }
+    if (ctx.section === 'pill') {
+        // The label is the only thing hiding changes here; the pill stays clickable (docs/session-files.md: hidden-is-presentation-only).
+        items.push({ id: 'toggleHidden', label: ctx.hidden ? 'Show Modality' : 'Hide Modality', group: 2, local: true });
+    }
+    return items;
+}
+/** The help modal's right-click row, derived from the same model so it cannot promise an item this host does not offer. */
+function contextMenuHelpText(caps) {
+    const probe = { section: 'image', tupleIndex: 0, modalityIndex: 0 };
+    const labels = [
+        ...buildContextMenu(probe, caps),
+        ...buildContextMenu({ ...probe, section: 'pill' }, caps),
+    ].map(item => (item.id === 'toggleHidden' ? 'Hide/Show Modality' : item.label));
+    return [...new Set(labels)].join(' / ');
+}
+
+
+/***/ }),
+/* 8 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   closeContextMenu: () => (/* binding */ closeContextMenu),
+/* harmony export */   isContextMenuOpen: () => (/* binding */ isContextMenuOpen),
+/* harmony export */   openContextMenu: () => (/* binding */ openContextMenu)
+/* harmony export */ });
+const menuEl = document.getElementById('context-menu');
+let pick = null;
+function isContextMenuOpen() {
+    return menuEl.classList.contains('visible');
+}
+function closeContextMenu() {
+    if (!isContextMenuOpen())
+        return;
+    menuEl.classList.remove('visible');
+    menuEl.innerHTML = '';
+    pick = null;
+}
+/** Open at viewport coordinates `x`/`y`, clamped to stay on screen. An empty item list opens nothing. */
+function openContextMenu(items, x, y, onPick) {
+    closeContextMenu();
+    if (items.length === 0)
+        return;
+    pick = onPick;
+    let lastGroup = items[0].group;
+    for (const item of items) {
+        if (item.group !== lastGroup) {
+            const sep = document.createElement('div');
+            sep.className = 'context-menu-sep';
+            menuEl.appendChild(sep);
+            lastGroup = item.group;
+        }
+        const btn = document.createElement('button');
+        btn.className = 'context-menu-item';
+        btn.textContent = item.label;
+        btn.dataset.actionId = item.id;
+        btn.addEventListener('click', () => {
+            const handler = pick;
+            closeContextMenu();
+            handler?.(item.id);
+        });
+        menuEl.appendChild(btn);
+    }
+    // Measure from a known origin: a stale `left` caps the shrink-to-fit width, same trap as the pill tooltip.
+    menuEl.style.left = '0px';
+    menuEl.style.top = '0px';
+    menuEl.classList.add('visible');
+    const r = menuEl.getBoundingClientRect();
+    menuEl.style.left = `${Math.max(2, Math.min(x, window.innerWidth - r.width - 2))}px`;
+    menuEl.style.top = `${Math.max(2, Math.min(y, window.innerHeight - r.height - 2))}px`;
+}
+// Dismissal is global and in capture: a menu that outlives its target is worse than one that closes early.
+document.addEventListener('mousedown', (e) => {
+    if (isContextMenuOpen() && !e.target?.closest?.('#context-menu'))
+        closeContextMenu();
+}, true);
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !isContextMenuOpen())
+        return;
+    // Swallowed, so Escape dismisses the menu without also resetting the view's zoom.
+    e.preventDefault();
+    e.stopPropagation();
+    closeContextMenu();
+}, true);
+document.addEventListener('wheel', () => closeContextMenu(), true);
+window.addEventListener('blur', () => closeContextMenu());
+window.addEventListener('resize', () => closeContextMenu());
+
+
+/***/ }),
+/* 9 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   buildNotice: () => (/* binding */ buildNotice)
+/* harmony export */ });
+/* harmony import */ var _contextMenuModel__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(7);
+/** Pure (no vscode, no DOM): what the user is told when an action finishes — one wording, one action rule, both products (docs/standalone.md: affordances-rendered-by-the-webview). */
+
+/** Wording plus the capability gate on the reveal action — the one place a notice is composed. */
+function buildNotice(event, caps) {
+    const reveal = (path) => (caps.revealInExplorer ? { label: _contextMenuModel__WEBPACK_IMPORTED_MODULE_0__.REVEAL_LABEL, path } : undefined);
+    switch (event.kind) {
+        case 'pptxSaved':
+            return { text: `PPTX exported: ${event.path}`, tone: 'info', action: reveal(event.path) };
+        case 'pptxFailed':
+            return { text: `PPTX export failed: ${event.error}`, tone: 'error' };
+        case 'sessionSaved':
+            return { text: `Session saved: ${event.path}`, tone: 'info', action: reveal(event.path) };
+        case 'sessionSaveFailed':
+            return { text: `Could not save the session: ${event.error}`, tone: 'error' };
+        case 'pathCopied':
+            return { text: 'Path copied', tone: 'info' };
+        case 'copyPathFailed':
+            return { text: `Could not copy the path: ${event.error}`, tone: 'error' };
+    }
+}
+
+
 /***/ })
 /******/ 	]);
 /************************************************************************/
@@ -4445,10 +4666,16 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _thumbUrlCache__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(4);
 /* harmony import */ var _tupleLoadPlan__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(5);
 /* harmony import */ var _emptyNotice__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(6);
+/* harmony import */ var _contextMenuModel__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(7);
+/* harmony import */ var _contextMenu__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(8);
+/* harmony import */ var _noticeChannel__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(9);
 /**
  * WebView main script for ImageCompare
  * Handles all UI rendering and user interactions
  */
+
+
+
 
 
 
@@ -4500,6 +4727,8 @@ const progressFillEl = document.getElementById('progress-fill');
 const helpModalEl = document.getElementById('help-modal');
 const helpVersionEl = document.getElementById('help-version');
 const helpBtn = document.getElementById('help-btn');
+const helpContextMenuItemsEl = document.getElementById('help-contextmenu-items');
+const helpRowSaveSessionEl = document.getElementById('help-row-savesession');
 const closeHelpBtn = document.getElementById('close-help-btn');
 const reorderLeftBtn = document.getElementById('reorder-left');
 const reorderRightBtn = document.getElementById('reorder-right');
@@ -4572,6 +4801,8 @@ function setPptxBusy(busy) {
 }
 // Session-file labels are user-authored: show them in full, never truncated.
 let labelsExplicit = false;
+// What this host can serve. Capability, never identity: no branch here asks whether it is VS Code (docs/standalone.md: affordances-rendered-by-the-webview).
+let capabilities = _contextMenuModel__WEBPACK_IMPORTED_MODULE_6__.NO_HOST_CAPABILITIES;
 // Read-only state snapshot for the Playwright webview testbed (test/webview); inert unless the harness sets __ic_test_enabled — see docs/testing.md.
 if (typeof window !== 'undefined' && window.__ic_test_enabled) {
     window.__ic_test = {
@@ -4593,6 +4824,7 @@ if (typeof window !== 'undefined' && window.__ic_test_enabled) {
             votingEnabled,
             pptxBusy,
             thumbUrlsLive: thumbnailUrls.liveCount,
+            capabilities: { ...capabilities },
         }),
     };
 }
@@ -4801,15 +5033,8 @@ window.addEventListener('message', (event) => {
         case 'thumbnailProgress':
             handleProgress(message);
             break;
-        case 'copyImage':
-            copyCurrentImage();
-            break;
-        case 'toggleModalityHidden':
-            if (hiddenModalities.has(message.modalityIndex))
-                hiddenModalities.delete(message.modalityIndex);
-            else
-                hiddenModalities.add(message.modalityIndex);
-            updateModalitySelector();
+        case 'notice':
+            showNotice(message.event);
             break;
         case 'fileDeleted':
             console.log('[IC] fileDeleted', message.tupleIndex, message.modalityIndex);
@@ -4852,10 +5077,11 @@ window.addEventListener('message', (event) => {
             break;
         case 'pptxComplete':
             setPptxBusy(false);
+            showNotice({ kind: 'pptxSaved', path: message.path });
             break;
         case 'pptxError':
             setPptxBusy(false);
-            showCopyToast(`PPTX export failed: ${message.error}`);
+            showNotice({ kind: 'pptxFailed', error: message.error });
             break;
         case '_debug':
             console.log('[IC-EXT]', message.msg);
@@ -4890,6 +5116,8 @@ function handleWinnersReset(message) {
 function handleInit(message) {
     // Absent/empty version renders nothing: the :empty CSS rule hides the footer entirely.
     helpVersionEl.textContent = message.version ? `ImageCompare v${message.version}` : '';
+    capabilities = message.capabilities ?? _contextMenuModel__WEBPACK_IMPORTED_MODULE_6__.NO_HOST_CAPABILITIES;
+    applyCapabilitiesToHelp();
     // Reset all state for new comparison
     tuples = message.tuples;
     modalities = message.modalities;
@@ -5682,6 +5910,8 @@ function updateCarouselThumbSize(snapToDevicePixels = true) {
 }
 let carouselDelegatesInstalled = false;
 function buildCarousel() {
+    // An open menu's target is a slot, and every caller here re-indexes slots; a stale target copies or deletes the wrong file.
+    (0,_contextMenu__WEBPACK_IMPORTED_MODULE_7__.closeContextMenu)();
     carouselEl.innerHTML = '';
     carouselEl.style.width = CAROUSEL_WIDTH + 'px';
     carouselRowPool = [];
@@ -5987,11 +6217,41 @@ function hidePillTooltip() {
 }
 let copyToastTimer;
 function showCopyToast(text) {
+    renderToast(text, 'info', undefined);
+}
+/** A host event, worded and capability-gated by the shared channel — never by the caller (docs/standalone.md: affordances-rendered-by-the-webview). */
+function showNotice(event) {
+    const notice = (0,_noticeChannel__WEBPACK_IMPORTED_MODULE_8__.buildNotice)(event, capabilities);
+    renderToast(notice.text, notice.tone, notice.action);
+}
+function renderToast(text, tone, action) {
     copyToastEl.textContent = text;
+    copyToastEl.classList.toggle('error', tone === 'error');
+    copyToastEl.classList.toggle('has-action', !!action);
+    if (action) {
+        const btn = document.createElement('button');
+        btn.id = 'notice-action';
+        btn.textContent = action.label;
+        btn.addEventListener('click', () => {
+            hideToast();
+            vscode.postMessage({ type: 'revealPath', path: action.path });
+        });
+        copyToastEl.appendChild(btn);
+    }
     copyToastEl.classList.add('visible');
     if (copyToastTimer !== undefined)
         clearTimeout(copyToastTimer);
-    copyToastTimer = setTimeout(() => copyToastEl.classList.remove('visible'), 1400);
+    // An offered action needs long enough to be clicked; a bare toast does not.
+    copyToastTimer = setTimeout(hideToast, action ? 8000 : 1400);
+}
+/** `has-action` goes with `visible`: a faded toast that kept it stayed a transparent click-eater over the viewer. */
+function hideToast() {
+    copyToastEl.classList.remove('visible', 'has-action');
+}
+/** The help modal states what THIS host offers, from the same model that builds the menu, so it cannot promise a missing item. */
+function applyCapabilitiesToHelp() {
+    helpContextMenuItemsEl.textContent = (0,_contextMenuModel__WEBPACK_IMPORTED_MODULE_6__.contextMenuHelpText)(capabilities);
+    helpRowSaveSessionEl.hidden = !capabilities.saveSessionAs;
 }
 // Truncates auto-derived directory names, which would otherwise blow out the status bar.
 function pillLabel(name) {
@@ -6002,6 +6262,7 @@ function pillLabel(name) {
 function buildModalitySelector() {
     // The hovered pill is about to be destroyed, and a removed element never gets mouseleave.
     hidePillTooltip();
+    (0,_contextMenu__WEBPACK_IMPORTED_MODULE_7__.closeContextMenu)();
     modalitySelectorEl.innerHTML = '';
     // modalities/modalityColors/modalityPaths are already in display order after any reordering.
     for (let displayIdx = 0; displayIdx < modalityOrder.length; displayIdx++) {
@@ -6036,6 +6297,45 @@ modalitySelectorEl.addEventListener('mouseout', (e) => {
         return; // moving between pills: the mouseover re-aims it
     hidePillTooltip();
 });
+/** Which surface was right-clicked, in wire terms; null where the comparison offers nothing and the host's own menu still applies. */
+function contextTargetFor(target) {
+    const pill = target?.closest?.('.modality-btn');
+    if (pill) {
+        const original = modalityOrder[parseInt(pill.dataset.displayIndex || '0', 10)];
+        return { section: 'pill', tupleIndex: currentTupleIndex, modalityIndex: original, hidden: hiddenModalities.has(original) };
+    }
+    if (target?.closest?.('#viewer')) {
+        return { section: 'image', tupleIndex: currentTupleIndex, modalityIndex: modalityOrder[currentModalityIndex] };
+    }
+    return null;
+}
+document.addEventListener('contextmenu', (e) => {
+    const target = contextTargetFor(e.target);
+    if (!target)
+        return;
+    // Suppresses the host's own menu in both products: VS Code's webview skips a contextmenu it finds already default-prevented, and so does the browser.
+    e.preventDefault();
+    (0,_contextMenu__WEBPACK_IMPORTED_MODULE_7__.openContextMenu)((0,_contextMenuModel__WEBPACK_IMPORTED_MODULE_6__.buildContextMenu)(target, capabilities), e.clientX, e.clientY, id => runMenuAction(id, target));
+});
+/** Local items never reach the wire; the rest are the host's to serve. */
+function runMenuAction(action, target) {
+    switch (action) {
+        case 'copyImage':
+            copyCurrentImage();
+            break;
+        case 'toggleHidden': {
+            const original = asOriginal(target.modalityIndex);
+            if (hiddenModalities.has(original))
+                hiddenModalities.delete(original);
+            else
+                hiddenModalities.add(original);
+            updateModalitySelector();
+            break;
+        }
+        default:
+            vscode.postMessage({ type: 'menuAction', action, ctx: target });
+    }
+}
 function updateModalitySelector() {
     // Calculate win counts per modality (by display index)
     const winCounts = new Array(modalities.length).fill(0);
@@ -6049,14 +6349,8 @@ function updateModalitySelector() {
     const buttons = modalitySelectorEl.querySelectorAll('.modality-btn');
     buttons.forEach((btn) => {
         const displayIdx = parseInt(btn.dataset.displayIndex || '0', 10);
-        // Re-stamped on every update because [ ] reordering changes which original modality this position shows.
+        // Re-read on every update because [ ] reordering changes which original modality this position shows.
         const originalIdx = modalityOrder[displayIdx];
-        btn.setAttribute('data-vscode-context', JSON.stringify({
-            webviewSection: 'imageComparePill',
-            modalityIndex: originalIdx,
-            imageCompareHidden: hiddenModalities.has(originalIdx),
-            preventDefaultContextMenuItems: true
-        }));
         btn.classList.toggle('hidden-modality', hiddenModalities.has(originalIdx));
         if (displayIdx === currentModalityIndex) {
             btn.classList.add('active');
@@ -6167,13 +6461,6 @@ function render() {
         ? reorderImagesForDisplay(cached)
         : new Array(modalityOrder.length).fill(undefined);
     const currentImage = images[currentModalityIndex];
-    // Anchors the native webview context menu (package.json contributes.menus."webview/context").
-    viewerEl.setAttribute('data-vscode-context', JSON.stringify({
-        webviewSection: 'imageCompareImage',
-        tupleIndex: currentTupleIndex,
-        modalityIndex: modalityOrder[currentModalityIndex],
-        preventDefaultContextMenuItems: true
-    }));
     // Updated even when showing a preview. No centering: render() runs on image arrivals and every resize frame, and a re-center here overrides the resize anchor.
     updateModalitySelector();
     if (isMultiTupleMode) {
@@ -6261,6 +6548,9 @@ function renderThumbnail(img, imgW, imgH, viewerW, viewerH, baseScale) {
 }
 // Event handlers
 function handleKeyDown(e) {
+    // Modal for keys, as the host menu it replaced was: Del behind an open menu is a permanent file delete.
+    if ((0,_contextMenu__WEBPACK_IMPORTED_MODULE_7__.isContextMenuOpen)())
+        return;
     if (e.code === 'Escape' && helpModalEl.classList.contains('active')) {
         helpModalEl.classList.remove('active');
         e.preventDefault();
@@ -6269,7 +6559,8 @@ function handleKeyDown(e) {
     // Native save no-ops on the readonly custom editor, so the webview owns Ctrl/Cmd+S.
     if (e.code === 'KeyS' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
         e.preventDefault();
-        vscode.postMessage({ type: 'saveSessionAs' });
+        if (capabilities.saveSessionAs)
+            vscode.postMessage({ type: 'saveSessionAs' });
         return;
     }
     // Crop mode intercepts keys
