@@ -272,14 +272,24 @@ body {
 }
 #info.hidden { display: none; }
 
+/* One scrollable row, never wrapping: #info is flex-shrink:0, so a wrapped pill wall grew the bar and ate the viewer at high modality counts. position:relative makes a pill's offsetLeft the scroll coordinate (docs/loading-architecture.md: selection-centres-on-navigation). */
 #modality-selector {
+  position: relative;
   display: flex;
-  gap: 2px 4px;
-  flex-wrap: wrap;
+  gap: 4px;
+  flex-wrap: nowrap;
   align-items: center;
-  align-content: center;
   min-width: 0;
+  /* Capped so #status keeps a readable share: the strip's natural width is unbounded and #status collapses to 0 before it. Fewer pills visible than the old wrap showed, deliberately — the wrap paid for them in viewer height. */
+  max-width: 60%;
+  /* The active pill's ring is a 2px OUTER box-shadow and :hover scales 5%, both outside the pill's box, so the strip pads on EVERY side — vertically the overflow crops them, and horizontally the first and last pill's ring falls outside the scroll range at either end. */
+  padding: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* No scrollbar: Chromium's is an OVERLAY here, so on a 22px strip it painted across a quarter of the pills, and reserving space for it cost the whole info bar 12px of permanent height. The strip's affordance is the active pill, which every navigation scrolls into view. */
+  scrollbar-width: none;
 }
+#modality-selector::-webkit-scrollbar { display: none; }
 
 #status {
   color: var(--vscode-descriptionForeground, #888);
@@ -530,6 +540,7 @@ body {
 /* 1px top+bottom on adjacent rows = 2px vertical space, matching the 2px column gap — an equidistant wall, no separator lines. */
 /* No transitions on selection styling: the wall jumps instantly, so a fading highlight pulses the center on every step. */
 /* Absolutely positioned: rows are a recycled pool placed at tupleIndex * rowHeight inside the virtual wall. */
+/* Containment bounds paint, layout and hit-testing to the row: a profile of a wide grid spent ~2000ms of 4000 in Paint (12055 of them), Layerize and HitTest, against 270ms of script (docs/loading-architecture.md: rows-contain-their-own-paint). */
 .carousel-row {
   position: absolute;
   left: 0;
@@ -538,7 +549,9 @@ body {
   gap: 2px;
   padding: 1px 6px;
   cursor: pointer;
+  contain: content;
 }
+/* This gap and padding ARE the column axis: main.ts mirrors them as CAROUSEL_TILE_GAP/CAROUSEL_ROW_PAD to centre a column (docs/loading-architecture.md: selection-centres-on-navigation). Change one, change both. */
 .carousel-row:hover { background: rgba(255, 255, 255, 0.05); }
 .carousel-row.current { background: rgba(255, 255, 255, 0.1); }
 
@@ -749,6 +762,8 @@ body {
         <tr><td>Enter</td><td>Toggle winner / confirm crop (in crop mode)</td></tr>
         <tr><td>Scroll</td><td>Zoom in/out; scroll tuples on the film strip</td></tr>
         <tr><td>Shift+Scroll</td><td>On the film strip: scroll the film strip sideways</td></tr>
+        <tr><td>Scroll (pills)</td><td>On the modality row: scroll it sideways when it overflows</td></tr>
+        <tr><td>Alt+Scroll</td><td>Anywhere above: 5× faster</td></tr>
         <tr><td>Drag</td><td>Pan image</td></tr>
         <tr><td>Click</td><td>Film-strip tile: go to it; its corner circle: toggle winner</td></tr>
         <tr id="help-row-contextmenu"><td>Right-click</td><td>On the image or a pill: <span id="help-contextmenu-items"></span></td></tr>
@@ -4599,6 +4614,49 @@ function buildNotice(event, caps) {
 }
 
 
+/***/ }),
+/* 10 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   ALT_SPEED: () => (/* binding */ ALT_SPEED),
+/* harmony export */   ZOOM_STEP: () => (/* binding */ ZOOM_STEP),
+/* harmony export */   centreOffset: () => (/* binding */ centreOffset),
+/* harmony export */   scrollStep: () => (/* binding */ scrollStep),
+/* harmony export */   zoomFactor: () => (/* binding */ zoomFactor)
+/* harmony export */ });
+/** Pure (no vscode, no DOM): where a scroller sits so the selection is centred, and how much a wheel notch moves (docs/loading-architecture.md: selection-centres-on-navigation). */
+/** Notches a wheel notch is worth while Alt is held. One number for every axis, so "faster" means the same everywhere. */
+const ALT_SPEED = 5;
+/** Per-notch zoom step, as a fraction: a notch scales by 1 ± this. */
+const ZOOM_STEP = 0.03;
+/**
+ * Offset that centres the span `[start, start + size)` in `viewport`, clamped to the scrollable range.
+ * `snapTo > 0` quantizes to a uniform item pitch, so one step moves the grid exactly one item or not
+ * at all — pass it for a uniform axis (carousel rows and columns), omit it where items differ in
+ * size (the modality pills).
+ */
+function centreOffset(start, size, viewport, content, snapTo = 0) {
+    const centred = start - (viewport - size) / 2;
+    const snapped = snapTo > 0 ? Math.round(centred / snapTo) * snapTo : centred;
+    return Math.max(0, Math.min(snapped, Math.max(0, content - viewport)));
+}
+/** How far a linear scroller moves for one wheel notch. Alt multiplies, because distance adds. */
+function scrollStep(delta, alt) {
+    return delta * (alt ? ALT_SPEED : 1);
+}
+/**
+ * Zoom scale for one wheel notch. Alt *compounds* rather than multiplying the step: zoom is
+ * multiplicative, so `ALT_SPEED` notches is `step ** ALT_SPEED` — scaling the step instead would
+ * make Alt mean something different here than it does on the scrolling axes.
+ */
+function zoomFactor(deltaY, alt) {
+    const step = deltaY > 0 ? 1 - ZOOM_STEP : 1 + ZOOM_STEP;
+    return alt ? Math.pow(step, ALT_SPEED) : step;
+}
+
+
 /***/ })
 /******/ 	]);
 /************************************************************************/
@@ -4669,10 +4727,12 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _contextMenuModel__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(7);
 /* harmony import */ var _contextMenu__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(8);
 /* harmony import */ var _noticeChannel__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(9);
+/* harmony import */ var _axisScroll__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(10);
 /**
  * WebView main script for ImageCompare
  * Handles all UI rendering and user interactions
  */
+
 
 
 
@@ -4872,9 +4932,10 @@ function setupEventListeners() {
     document.addEventListener('copy', handleCopyEvent);
     // Carousel wheel; the wall is not a native scroll container, so there is no scroll event to hook.
     carouselEl.addEventListener('wheel', handleCarouselWheel, { passive: false });
+    modalitySelectorEl.addEventListener('wheel', handlePillWheel, { passive: false });
     // Carousel resize
     setupCarouselResize();
-    // The visible-row window is computed from clientHeight, which is 0 until the viewer unhides — and changes on vertical panel resizes. Height-only guard: width drags must not re-center (the resize anchor owns those).
+    // The visible-row window is computed from clientHeight, which is 0 until the viewer unhides — and changes on vertical panel resizes. The one paint-path re-centre the rule allows, height-only: width drags must not re-center, the resize anchor owns those (docs/loading-architecture.md: selection-centres-on-navigation).
     let lastCarouselViewH = 0;
     new ResizeObserver(() => {
         const h = carouselEl.clientHeight;
@@ -5193,8 +5254,7 @@ function handleThumbnail(message) {
     const key = `${message.tupleIndex}-${message.modalityIndex}`;
     // Binary payload -> Blob URL, like the full-image path: base64 thumbs cost ×1.33 on the wire and string churn at ~1000 tiles.
     const url = URL.createObjectURL(new Blob([message.bytes], { type: message.mime }));
-    // Update carousel thumb if exists
-    const thumb = carouselEl.querySelector(`.carousel-thumb[data-tuple="${message.tupleIndex}"][data-modality="${message.modalityIndex}"]`);
+    const thumb = carouselTileFor(message.tupleIndex, message.modalityIndex);
     thumbnailUrls.set(key, url, () => {
         if (!thumb)
             return;
@@ -5226,8 +5286,7 @@ function handleThumbnailError(message) {
     console.warn(`Thumbnail unavailable for ${message.tupleIndex}-${message.modalityIndex}: ${message.error}`);
     // Store placeholder in the url cache so it persists across carousel rebuilds
     const key = `${message.tupleIndex}-${message.modalityIndex}`;
-    // Show placeholder in carousel
-    const thumb = carouselEl.querySelector(`.carousel-thumb[data-tuple="${message.tupleIndex}"][data-modality="${message.modalityIndex}"]`);
+    const thumb = carouselTileFor(message.tupleIndex, message.modalityIndex);
     thumbnailUrls.set(key, PLACEHOLDER_THUMB, () => {
         if (!thumb)
             return;
@@ -5360,7 +5419,7 @@ function handleFileDeleted(message) {
     // The missing sentinel must live in the map: recycled rows repaint from it (message.modalityIndex is already the global/original index).
     const thumbKey = `${message.tupleIndex}-${message.modalityIndex}`;
     // Update carousel to show placeholder for missing file
-    const thumb = carouselEl.querySelector(`.carousel-thumb[data-tuple="${message.tupleIndex}"][data-modality="${message.modalityIndex}"]`);
+    const thumb = carouselTileFor(message.tupleIndex, message.modalityIndex);
     thumbnailUrls.set(thumbKey, PLACEHOLDER_THUMB, () => {
         if (!thumb)
             return;
@@ -5397,7 +5456,7 @@ function handleFileRestored(message) {
     const thumbKey = `${message.tupleIndex}-${message.modalityIndex}`;
     thumbnailUrls.delete(thumbKey);
     // Update carousel to remove missing state
-    const thumb = carouselEl.querySelector(`.carousel-thumb[data-tuple="${message.tupleIndex}"][data-modality="${message.modalityIndex}"]`);
+    const thumb = carouselTileFor(message.tupleIndex, message.modalityIndex);
     if (thumb) {
         thumb.classList.remove('missing');
     }
@@ -5887,14 +5946,17 @@ function showPreviewOrLoading(tupleIndex, displayModalityIndex) {
 }
 // Reserved for the scrollbar thumb (6px + edge gaps) so it never overlaps the last tile column.
 const SCROLLBAR_GUTTER = 10;
+// .carousel-row's horizontal padding: where the first tile starts, and so the origin of the column axis.
+const CAROUSEL_ROW_PAD = 6;
+// .carousel-row's `gap`, which is also the vertical space between rows — keep both in step with the CSS.
+const CAROUSEL_TILE_GAP = 2;
 /** Carousel width that fits every modality column at perTile px (6px row padding each side, scrollbar gutter, 2px gaps). */
 function carouselFitWidth(perTile) {
-    return 12 + SCROLLBAR_GUTTER + modalities.length * perTile + (modalities.length - 1) * 2;
+    return 2 * CAROUSEL_ROW_PAD + SCROLLBAR_GUTTER + modalities.length * perTile + (modalities.length - 1) * CAROUSEL_TILE_GAP;
 }
 function updateCarouselThumbSize(snapToDevicePixels = true) {
     const numModalities = modalities.length;
-    // Row padding: 6px left + 6px right = 12px; scrollbar gutter; gaps: 2px each
-    const availableWidth = CAROUSEL_WIDTH - 12 - SCROLLBAR_GUTTER - (numModalities - 1) * 2;
+    const availableWidth = CAROUSEL_WIDTH - 2 * CAROUSEL_ROW_PAD - SCROLLBAR_GUTTER - (numModalities - 1) * CAROUSEL_TILE_GAP;
     // Fractional, not floored: integer steps made every tile snap visibly during a resize drag.
     CAROUSEL_THUMB_SIZE = availableWidth / numModalities;
     // Tiles scale down to fit the width — a floor here reintroduces clipped columns.
@@ -5949,6 +6011,7 @@ function buildCarousel() {
     // A rebuild resets the pool; this restores the offset (clamped) and materializes the visible rows.
     applyCarouselOffset(carouselOffset);
 }
+// centerOnCurrent is the navigation/paint seam: only a navigation may pass true (docs/loading-architecture.md: selection-centres-on-navigation).
 function updateCarouselSelection(centerOnCurrent = true) {
     if (!isMultiTupleMode)
         return;
@@ -6001,11 +6064,17 @@ let carouselThumbEl = null;
 let carouselHScrollEl = null;
 let carouselScrollHideTimer = null;
 const CAROUSEL_OVERSCAN = 3;
+// How long after the last wheel notch the flown-past rows get their real thumbnails. Short enough to read as instant, long enough that a continuous scroll never pays for rows it passes.
+const CAROUSEL_SETTLE_MS = 90;
 let carouselRowPool = [];
 let carouselRowBound = []; // pool slot -> bound tupleIndex (-1 = hidden)
 let carouselRowTopAt = []; // pool slot -> applied top px, to skip redundant writes
 function carouselRowHeight() {
-    return CAROUSEL_THUMB_SIZE + 2;
+    return CAROUSEL_THUMB_SIZE + CAROUSEL_TILE_GAP;
+}
+/** Tile width plus the row's gap. Equal to the row height today, and derived rather than borrowed so a CSS gap change moves both. */
+function carouselColumnPitch() {
+    return CAROUSEL_THUMB_SIZE + CAROUSEL_TILE_GAP;
 }
 // No phase-lock pad: it showed as a blank strip at the bottom, and its mod-based size sawtoothed during resize, bouncing the bottom clamp.
 function carouselContentHeight() {
@@ -6044,10 +6113,15 @@ function ensureVisibleCarouselRows() {
     const rowH = carouselRowHeight();
     if (rowH <= 0)
         return;
-    carouselWallEl.style.height = carouselContentHeight() + 'px';
+    // Written only on change: re-setting these every wheel event forced a layout per event, for a box that only moves with the tuple count or tile size (docs/loading-architecture.md: wheel-coalesced-to-one-frame).
+    const wallH = carouselContentHeight() + 'px';
+    if (carouselWallEl.style.height !== wallH)
+        carouselWallEl.style.height = wallH;
     // Wider than the pane only when the 12px tile floor bit: rows overflow into the horizontal scroller.
     const neededW = carouselFitWidth(CAROUSEL_THUMB_SIZE);
-    carouselWallEl.style.width = neededW > CAROUSEL_WIDTH ? neededW + 'px' : '';
+    const wallW = neededW > CAROUSEL_WIDTH ? neededW + 'px' : '';
+    if (carouselWallEl.style.width !== wallW)
+        carouselWallEl.style.width = wallW;
     const viewH = carouselEl.clientHeight;
     const first = Math.max(0, Math.floor(carouselOffset / rowH) - CAROUSEL_OVERSCAN);
     const last = Math.min(tuples.length - 1, Math.floor((carouselOffset + viewH) / rowH) + CAROUSEL_OVERSCAN);
@@ -6084,9 +6158,11 @@ function ensureVisibleCarouselRows() {
         }
     }
 }
+const rowParts = new WeakMap();
 function createCarouselRowShell() {
     const row = document.createElement('div');
     row.className = 'carousel-row';
+    const parts = { imgs: [], circles: [] };
     // Born hidden: with the pool oversized for the smallest row height, some shells stay unbound — visible unbound shells would stack at top 0.
     row.style.display = 'none';
     for (let displayIdx = 0; displayIdx < modalityOrder.length; displayIdx++) {
@@ -6103,26 +6179,60 @@ function createCarouselRowShell() {
                 thumbRetried.delete(`${img.dataset.tuple}-${img.dataset.modality}`);
         };
         container.appendChild(img);
+        parts.imgs.push(img);
+        let circle = null;
         if (votingEnabled) {
-            const circle = document.createElement('div');
+            circle = document.createElement('div');
             circle.className = 'winner-circle';
             container.appendChild(circle);
         }
+        parts.circles.push(circle);
         row.appendChild(container);
     }
+    rowParts.set(row, parts);
     return row;
 }
+/**
+ * The tile showing a slot, or null when no bound row is holding it. Ring-mapped, so this is an index
+ * lookup: a DOM search per arriving thumbnail scanned the whole carousel subtree, and a sweep
+ * delivers hundreds at once (docs/loading-architecture.md: carousel-dom-never-searched).
+ */
+function carouselTileFor(tupleIndex, originalModalityIndex) {
+    const pool = carouselRowPool.length;
+    if (pool === 0)
+        return null;
+    const slot = tupleIndex % pool;
+    if (carouselRowBound[slot] !== tupleIndex)
+        return null;
+    const displayIdx = modalityOrder.indexOf(asOriginal(originalModalityIndex));
+    if (displayIdx < 0)
+        return null;
+    return rowParts.get(carouselRowPool[slot])?.imgs[displayIdx] ?? null;
+}
 /** Everything a row shows derives from the state maps, so recycling a slot fully repaints it — and a row only reads urls, never revokes one (docs/loading-architecture.md: thumb-url-owned-by-cache). */
+/** True while a wheel is still moving the wall: rows bound during a flyby take the blank tile, not their own (docs/loading-architecture.md: flyby-rows-defer-decodes). */
+let carouselFlying = false;
+let carouselSettleTimer;
+/** Rebind every bound row now that the wall has stopped, so the rows the user actually landed on get their images. */
+function fillFlybyRows() {
+    carouselFlying = false;
+    for (let s = 0; s < carouselRowPool.length; s++) {
+        if (carouselRowBound[s] >= 0)
+            bindCarouselRow(carouselRowPool[s], carouselRowBound[s]);
+    }
+}
 function bindCarouselRow(el, tupleIdx) {
     el.dataset.tupleIndex = String(tupleIdx);
     el.classList.toggle('current', tupleIdx === currentTupleIndex);
     const winnerIdx = winners.get(asTuple(tupleIdx));
-    const imgs = el.querySelectorAll('.carousel-thumb');
-    imgs.forEach((img, displayIdx) => {
+    const parts = rowParts.get(el);
+    if (!parts)
+        return;
+    parts.imgs.forEach((img, displayIdx) => {
         const originalIdx = modalityOrder[displayIdx];
         img.dataset.tuple = String(tupleIdx);
         img.dataset.modality = String(originalIdx);
-        const url = thumbnailUrls.get(`${tupleIdx}-${originalIdx}`);
+        const url = carouselFlying ? undefined : thumbnailUrls.get(`${tupleIdx}-${originalIdx}`);
         if (url) {
             if (img.getAttribute('src') !== url)
                 img.src = url;
@@ -6138,7 +6248,7 @@ function bindCarouselRow(el, tupleIdx) {
         }
         img.classList.toggle('active', tupleIdx === currentTupleIndex);
         img.classList.toggle('selected', tupleIdx === currentTupleIndex && displayIdx === currentModalityIndex);
-        const circle = img.parentElement?.querySelector('.winner-circle');
+        const circle = parts.circles[displayIdx];
         if (circle)
             circle.classList.toggle('winner', winnerIdx === displayIdx);
     });
@@ -6172,9 +6282,37 @@ function scrollCarouselToCurrentTuple() {
     const rowH = carouselRowHeight();
     if (rowH <= 0)
         return;
-    // Virtual rows make the row top pure arithmetic; quantized to whole rows so a step moves the grid exactly one row or not at all (the sole exception: one partial jump where the bottom clamp lands off-grid).
-    const target = currentTupleIndex * rowH - (carouselEl.clientHeight - rowH) / 2;
-    applyCarouselOffset(Math.round(target / rowH) * rowH);
+    // Navigation is a landing, not a flyby: clear the defer first so the rows it binds take their images directly.
+    if (carouselSettleTimer !== undefined)
+        clearTimeout(carouselSettleTimer);
+    carouselFlying = false;
+    // Virtual rows make the row top pure arithmetic; snapped to whole rows so a step moves the grid exactly one row or not at all (docs/loading-architecture.md: selection-centres-on-navigation).
+    applyCarouselOffset((0,_axisScroll__WEBPACK_IMPORTED_MODULE_9__.centreOffset)(currentTupleIndex * rowH, rowH, carouselEl.clientHeight, carouselContentHeight(), rowH));
+}
+/** The column axis of the same grid, under the same rule — `<-`/`->` used to leave the selected column off-screen entirely (docs/loading-architecture.md: selection-centres-on-navigation). */
+function scrollCarouselToCurrentColumn() {
+    if (!isMultiTupleMode || !carouselHScrollEl)
+        return;
+    const pitch = carouselColumnPitch();
+    if (pitch <= 0)
+        return;
+    // Tiles start after the row's 6px left padding, so the span is offset by it; the snap is the same pitch as the rows'.
+    const start = CAROUSEL_ROW_PAD + currentModalityIndex * pitch;
+    carouselHScrollEl.scrollLeft = (0,_axisScroll__WEBPACK_IMPORTED_MODULE_9__.centreOffset)(start, CAROUSEL_THUMB_SIZE, carouselHScrollEl.clientWidth, carouselHScrollEl.scrollWidth, pitch);
+}
+/** Same rule, third axis. Pills differ in width, so there is no pitch to snap to (docs/loading-architecture.md: selection-centres-on-navigation). */
+function scrollPillsToCurrentModality() {
+    const pill = modalitySelectorEl.querySelector(`.modality-btn[data-display-index="${currentModalityIndex}"]`);
+    if (!pill)
+        return;
+    const left = (0,_axisScroll__WEBPACK_IMPORTED_MODULE_9__.centreOffset)(pill.offsetLeft, pill.offsetWidth, modalitySelectorEl.clientWidth, modalitySelectorEl.scrollWidth);
+    // Navigation slides; the wheel path assigns scrollLeft directly and stays instant under the pointer.
+    modalitySelectorEl.scrollTo({ left, behavior: 'smooth' });
+}
+/** Every deliberate modality change re-centres both horizontal axes; a wheel calls none of this (docs/loading-architecture.md: selection-centres-on-navigation). */
+function centreOnCurrentModality() {
+    scrollPillsToCurrentModality();
+    scrollCarouselToCurrentColumn();
 }
 function goToTupleAndModality(tupleIdx, modalityIdx) {
     // Unconditional: the clicked column is the sweep's aim even when it is the one already on screen, which no report may have carried yet (docs/loading-architecture.md: picked-column-reports-itself).
@@ -6185,6 +6323,7 @@ function goToTupleAndModality(tupleIdx, modalityIdx) {
             currentModalityIndex = modalityIdx;
             render();
             updateCarouselSelection();
+            centreOnCurrentModality();
         }
     }
     else {
@@ -6192,6 +6331,7 @@ function goToTupleAndModality(tupleIdx, modalityIdx) {
             previousModalityIndex = currentModalityIndex;
         currentModalityIndex = modalityIdx;
         loadTuple(tupleIdx);
+        centreOnCurrentModality();
     }
 }
 /**
@@ -6276,6 +6416,7 @@ function buildModalitySelector() {
                 previousModalityIndex = currentModalityIndex;
                 currentModalityIndex = asDisplay(displayIdx);
                 render();
+                centreOnCurrentModality();
                 columnReport.picked(currentModalityIndex);
             }
         });
@@ -6360,14 +6501,11 @@ function updateModalitySelector() {
             btn.classList.remove('active');
             btn.classList.add('inactive');
         }
-        // Update button text with win count if voting enabled and has wins
+        // Written only when it changed: replacing the text node on every render repainted the pill mid-transition, which is what read as flicker (docs/loading-architecture.md: selection-centres-on-navigation).
         const truncName = pillLabel(modalities[displayIdx]);
-        if (votingEnabled && winCounts[displayIdx] > 0) {
-            btn.textContent = `${truncName} (${winCounts[displayIdx]})`;
-        }
-        else {
-            btn.textContent = truncName;
-        }
+        const label = votingEnabled && winCounts[displayIdx] > 0 ? `${truncName} (${winCounts[displayIdx]})` : truncName;
+        if (btn.textContent !== label)
+            btn.textContent = label;
     });
     if (currentModalityIndex <= 0) {
         reorderLeftBtn.disabled = true;
@@ -6427,6 +6565,7 @@ function moveCurrentModality(direction) {
         buildCarousel();
     }
     render();
+    centreOnCurrentModality();
     // A reorder moves no column but re-permutes the strip the aim ranks over (docs/loading-architecture.md: picked-column-reports-itself).
     columnReport.keyed(currentModalityIndex);
 }
@@ -6461,7 +6600,7 @@ function render() {
         ? reorderImagesForDisplay(cached)
         : new Array(modalityOrder.length).fill(undefined);
     const currentImage = images[currentModalityIndex];
-    // Updated even when showing a preview. No centering: render() runs on image arrivals and every resize frame, and a re-center here overrides the resize anchor.
+    // Updated even when showing a preview. No centering: render() is a paint path, and a re-center here would fight the user's scroll and override the resize anchor (docs/loading-architecture.md: selection-centres-on-navigation).
     updateModalitySelector();
     if (isMultiTupleMode) {
         updateCarouselSelection(false);
@@ -6609,6 +6748,7 @@ function handleKeyDown(e) {
                 currentModalityIndex = previousModalityIndex;
                 previousModalityIndex = temp;
                 render();
+                centreOnCurrentModality();
             }
             break;
         case 'ArrowRight':
@@ -6620,6 +6760,7 @@ function handleKeyDown(e) {
                 previousModalityIndex = currentModalityIndex;
                 currentModalityIndex = asDisplay(target);
                 render();
+                centreOnCurrentModality();
                 columnReport.keyed(currentModalityIndex);
             }
             break;
@@ -6659,6 +6800,7 @@ function handleKeyDown(e) {
                 previousModalityIndex = currentModalityIndex;
                 currentModalityIndex = asDisplay(idx);
                 render();
+                centreOnCurrentModality();
                 columnReport.keyed(currentModalityIndex);
             }
             break;
@@ -6693,6 +6835,7 @@ function handleKeyUp(e) {
             currentModalityIndex = previousModalityIndex;
             previousModalityIndex = temp;
             render();
+            centreOnCurrentModality();
         }
     }
 }
@@ -6704,7 +6847,7 @@ function handleWheel(e) {
         return;
     }
     e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.97 : 1.03;
+    const delta = (0,_axisScroll__WEBPACK_IMPORTED_MODULE_9__.zoomFactor)(e.deltaY, e.altKey);
     const newZoom = Math.max(0.1, Math.min(50, zoom * delta));
     const rect = viewerEl.getBoundingClientRect();
     const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
@@ -6799,10 +6942,39 @@ function handleCarouselWheel(e) {
     e.stopPropagation();
     // Sideways intent (trackpad deltaX or shift+wheel) pans the overflowing columns; otherwise scroll rows.
     if (carouselHScrollEl && (e.deltaX !== 0 || e.shiftKey)) {
-        carouselHScrollEl.scrollLeft += e.deltaX !== 0 ? e.deltaX : e.deltaY;
+        carouselHScrollEl.scrollLeft += (0,_axisScroll__WEBPACK_IMPORTED_MODULE_9__.scrollStep)(e.deltaX !== 0 ? e.deltaX : e.deltaY, e.altKey);
         return;
     }
-    applyCarouselOffset(carouselOffset + e.deltaY);
+    queueCarouselWheel((0,_axisScroll__WEBPACK_IMPORTED_MODULE_9__.scrollStep)(e.deltaY, e.altKey));
+}
+let pendingWheelDelta = 0;
+let wheelRaf = 0;
+/**
+ * Wheel deltas are summed and applied once per frame. The row axis is a virtualized wall, so each
+ * apply rebinds rows and repaints tiles; several wheel events landing in one frame each did that
+ * work and only the last was ever painted (docs/loading-architecture.md: wheel-coalesced-to-one-frame).
+ */
+function queueCarouselWheel(delta) {
+    pendingWheelDelta += delta;
+    if (wheelRaf !== 0)
+        return;
+    carouselFlying = true;
+    if (carouselSettleTimer !== undefined)
+        clearTimeout(carouselSettleTimer);
+    carouselSettleTimer = setTimeout(fillFlybyRows, CAROUSEL_SETTLE_MS);
+    wheelRaf = requestAnimationFrame(() => {
+        wheelRaf = 0;
+        const delta = pendingWheelDelta;
+        pendingWheelDelta = 0;
+        applyCarouselOffset(carouselOffset + delta);
+    });
+}
+/** Wheel over the pill strip scrolls it, but only while it actually overflows — otherwise it would swallow a scroll meant for something else. */
+function handlePillWheel(e) {
+    if (modalitySelectorEl.scrollWidth <= modalitySelectorEl.clientWidth)
+        return;
+    e.preventDefault();
+    modalitySelectorEl.scrollLeft += (0,_axisScroll__WEBPACK_IMPORTED_MODULE_9__.scrollStep)(e.deltaX !== 0 ? e.deltaX : e.deltaY, e.altKey);
 }
 function setupCarouselThumbDrag(thumb) {
     thumb.addEventListener('mousedown', (e) => {
