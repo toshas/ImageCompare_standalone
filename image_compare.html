@@ -728,7 +728,7 @@ body {
         </div>
         <div id="fp-actions">
           <button id="crop-btn" title="Crop all modalities (C)">Crop</button>
-          <button id="delete-btn" title="Delete current tuple files (Del)">Delete</button>
+          <button id="delete-btn" title="Delete current tuple files (Del)">Delete</button><!-- title restated on init: what Del removes is the host's to say (docs/session-files.md: mode-behaviour-is-a-table) -->
           <button id="pptx-btn" title="Export voted tuples to PPTX">PPTX</button>
         </div>
       </div>
@@ -770,7 +770,7 @@ body {
         <tr id="help-row-savesession"><td>Ctrl/Cmd+S</td><td>Save Session As — keep a copy of this comparison</td></tr>
         <tr><td>C</td><td>Toggle crop mode</td></tr>
         <tr><td>2×-click</td><td>On a crop edge handle, square the crop toward that edge (in crop mode)</td></tr>
-        <tr><td>Del / Backspace</td><td>Delete current tuple files (permanent!)</td></tr>
+        <tr><td>Del / Backspace</td><td id="help-delete-text">Delete current tuple files (permanent!)</td></tr><!-- restated on init: the modal may not promise the wrong unit (docs/session-files.md: mode-behaviour-is-a-table) -->
         <tr><td>Esc</td><td>Reset zoom / cancel crop / close this help</td></tr>
       </table>
       <div style="margin-top: 20px;">
@@ -1256,6 +1256,103 @@ body {
     return existing.length;
   }
 
+  // src/cropPlan.ts
+  var CROP_SUFFIX_RE = /_crop\d+$/;
+  function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  function nextCropName(existingNamesPerModality, tupleName) {
+    const cropPattern = new RegExp(`^${escapeRegExp(tupleName)}_crop(\\d+)\\.`);
+    const cropNums = existingNamesPerModality.map((names) => {
+      let maxNum = 0;
+      for (const name of names) {
+        const match = name.match(cropPattern);
+        if (match) {
+          maxNum = Math.max(maxNum, parseInt(match[1], 10));
+        }
+      }
+      return maxNum + 1;
+    });
+    const cropNum = Math.max(...cropNums);
+    const cropSuffix = `_crop${String(cropNum).padStart(2, "0")}`;
+    return `${tupleName}${cropSuffix}.png`;
+  }
+  function stemOf(filename) {
+    return filename.replace(/\.[^./]+$/, "");
+  }
+  function cropNamesPerImage(existingNamesPerModality, imageNames) {
+    const listings = existingNamesPerModality.map((names) => [...names]);
+    return imageNames.map((imageName, i) => {
+      const name = nextCropName([listings[i] ?? []], stemOf(imageName));
+      for (const listing of listings) listing.push(name);
+      return name;
+    });
+  }
+  function toRelativeRect(rect, srcWidth, srcHeight) {
+    return {
+      x: rect.x / srcWidth,
+      y: rect.y / srcHeight,
+      w: rect.w / srcWidth,
+      h: rect.h / srcHeight
+    };
+  }
+  function scaleAndClampRect(relRect, width, height) {
+    const scaledRect = {
+      x: Math.max(0, Math.round(relRect.x * width)),
+      y: Math.max(0, Math.round(relRect.y * height)),
+      w: Math.round(relRect.w * width),
+      h: Math.round(relRect.h * height)
+    };
+    scaledRect.w = Math.min(scaledRect.w, width - scaledRect.x);
+    scaledRect.h = Math.min(scaledRect.h, height - scaledRect.y);
+    return scaledRect;
+  }
+
+  // src/modePolicy.ts
+  var MODES = {
+    // One directory whose subdirectories are the columns.
+    1: {
+      roots: "base-dir",
+      columnIsFile: false,
+      rootSubdirsAreColumns: true,
+      // Discovered, not named: finding one is an answer, and a comparison runs at one column.
+      minColumns: 1,
+      labelsApply: false,
+      grows: true,
+      voting: true,
+      deleteUnit: "tuple",
+      cropNaming: "tuple",
+      cropsJoin: true
+    },
+    // Several directories, each a column, named by the caller.
+    2: {
+      roots: "modality-dirs",
+      columnIsFile: false,
+      rootSubdirsAreColumns: false,
+      // Named by the caller, so one of them yielding nothing is a mistake worth reporting.
+      minColumns: 2,
+      labelsApply: true,
+      grows: true,
+      voting: true,
+      deleteUnit: "tuple",
+      cropNaming: "tuple",
+      cropsJoin: true
+    },
+    // One row whose columns are unrelated files — selected by hand, or enumerated from a directory.
+    3: {
+      roots: "files",
+      columnIsFile: true,
+      rootSubdirsAreColumns: false,
+      minColumns: 2,
+      labelsApply: false,
+      grows: false,
+      voting: false,
+      deleteUnit: "image",
+      cropNaming: "per-image",
+      cropsJoin: false
+    }
+  };
+
   // src/fileService.ts
   function debugLog(...args) {
     debugWrite("[IC-MATCH]", args);
@@ -1371,7 +1468,6 @@ body {
           if (debugEnabled()) debugLog(`  NO MATCH: ${mod}/${file.name} (no candidates, LCP=${lcpLength})`);
           continue;
         }
-        const cropSuffixRe = /_crop\d+$/;
         let bestIdx = candidates[0];
         if (candidates.length > 1) {
           let bestIsCrop = true;
@@ -1380,7 +1476,7 @@ body {
           if (debugEnabled()) debugLog(`  FUZZY: ${mod}/${file.name} - ${candidates.length} candidates (LCP=${lcpLength}):`);
           for (const idx of candidates) {
             const refName = stripExtension(refFiles[idx].name);
-            const isCrop = cropSuffixRe.test(refName);
+            const isCrop = CROP_SUFFIX_RE.test(refName);
             const lenDiff = Math.abs(refName.length - query.length);
             const lcs = lcsLength(query, refName);
             if (debugEnabled()) debugLog(`    candidate ref[${idx}] ${refName}: crop=${isCrop}, lenDiff=${lenDiff}, LCS=${lcs}`);
@@ -1524,7 +1620,7 @@ body {
         files.push({ name, uri: childUri });
       }
     }
-    if (subdirs.length >= 2) {
+    if (subdirs.length >= 1) {
       subdirs.sort((a, b) => naturalCompare(a.name, b.name));
       const modalityResult = await scanDirectoriesAsModalities(subdirs, 1);
       if (modalityResult) {
@@ -1532,11 +1628,9 @@ body {
       }
     }
     if (files.length > 0) {
-      throw new Error(
-        "This directory contains only image files without subdirectory structure.\n\nFor multi-modality comparison, please either:\n\u2022 Select a directory containing 2+ subdirectories (each subdirectory becomes a modality)\n\u2022 Select multiple directories (each directory becomes a modality)\n\u2022 Select specific image files to compare directly"
-      );
+      return scanEnumeratedFiles(files);
     }
-    throw new Error("Directory must contain 2+ subdirectories with images for comparison");
+    throw new Error("Directory must contain images, or subdirectories with images, to compare");
   }
   var DIR_LISTING_CONCURRENCY = 16;
   async function listImagesIn(dir) {
@@ -1579,7 +1673,7 @@ body {
         modalityFiles.set(listing.dir.name, listing.images);
       }
     }
-    if (modalityFiles.size < 2) {
+    if (modalityFiles.size < MODES[mode].minColumns) {
       return null;
     }
     const modalities = Array.from(modalityFiles.keys());
@@ -1624,7 +1718,7 @@ body {
   }
   async function scanFiles(uris) {
     const imageUris = uris.filter((uri) => isImageFile(uri.path));
-    if (imageUris.length < 2) {
+    if (imageUris.length < MODES[3].minColumns) {
       throw new Error("Please select at least 2 image files");
     }
     imageUris.sort((a, b) => naturalCompare(
@@ -1635,6 +1729,14 @@ body {
       name: uri.path.split("/").pop() || "unknown",
       uri
     })));
+  }
+  function scanEnumeratedFiles(files) {
+    const withoutCrops = files.filter((file) => !CROP_SUFFIX_RE.test(stripExtension(file.name)));
+    const chosen = withoutCrops.length >= MODES[3].minColumns ? withoutCrops : files;
+    if (chosen.length < MODES[3].minColumns) {
+      throw new Error("This directory holds one image; a comparison needs at least 2.");
+    }
+    return scanFilesAsTuple([...chosen].sort((a, b) => naturalCompare(a.name, b.name)));
   }
   function scanFilesAsTuple(files) {
     const names = files.map((f) => f.name);
@@ -1854,46 +1956,6 @@ body {
     return { x: parts[0], y: parts[1], w: parts[2], h: parts[3], srcW: parts[4], srcH: parts[5] };
   }
 
-  // src/cropPlan.ts
-  function escapeRegExp(s) {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-  function nextCropName(existingNamesPerModality, tupleName) {
-    const cropPattern = new RegExp(`^${escapeRegExp(tupleName)}_crop(\\d+)\\.`);
-    const cropNums = existingNamesPerModality.map((names) => {
-      let maxNum = 0;
-      for (const name of names) {
-        const match = name.match(cropPattern);
-        if (match) {
-          maxNum = Math.max(maxNum, parseInt(match[1], 10));
-        }
-      }
-      return maxNum + 1;
-    });
-    const cropNum = Math.max(...cropNums);
-    const cropSuffix = `_crop${String(cropNum).padStart(2, "0")}`;
-    return `${tupleName}${cropSuffix}.png`;
-  }
-  function toRelativeRect(rect, srcWidth, srcHeight) {
-    return {
-      x: rect.x / srcWidth,
-      y: rect.y / srcHeight,
-      w: rect.w / srcWidth,
-      h: rect.h / srcHeight
-    };
-  }
-  function scaleAndClampRect(relRect, width, height) {
-    const scaledRect = {
-      x: Math.max(0, Math.round(relRect.x * width)),
-      y: Math.max(0, Math.round(relRect.y * height)),
-      w: Math.round(relRect.w * width),
-      h: Math.round(relRect.h * height)
-    };
-    scaledRect.w = Math.min(scaledRect.w, width - scaledRect.x);
-    scaledRect.h = Math.min(scaledRect.h, height - scaledRect.y);
-    return scaledRect;
-  }
-
   // src/cropFlow.ts
   async function performCrop(scan, msg, io) {
     const tuple = scan.tuples[msg.tupleIndex];
@@ -1907,12 +1969,13 @@ body {
         }
       })
     );
-    const outputName = nextCropName(nameLists, tuple.name);
+    const behaviour = MODES[scan.mode];
+    const outputNames = behaviour.cropNaming === "per-image" ? cropNamesPerImage(nameLists, tuple.images.map((image) => image.name)) : tuple.images.map(() => nextCropName(nameLists, tuple.name));
     const relRect = toRelativeRect(msg.cropRect, msg.srcWidth, msg.srcHeight);
     let cancelled = 0;
     const schedule = io.schedule ?? ((work) => work());
     const results = await Promise.all(
-      tuple.images.map(async (image) => {
+      tuple.images.map(async (image, columnIndex) => {
         try {
           return await schedule(async () => {
             const dims = await io.getDimensions(image);
@@ -1921,7 +1984,7 @@ body {
             const cropMeta = encodeCropMeta(scaled, dims.width, dims.height);
             const png = await io.renderCrop(image, scaled, cropMeta);
             const withMeta = pngInjectText(BufferShim.isBuffer(png) ? png : BufferShim.from(png), CROP_RECT_KEYWORD, cropMeta);
-            return io.writeCrop(image, outputName, withMeta);
+            return io.writeCrop(image, outputNames[columnIndex], withMeta);
           });
         } catch (err) {
           if (io.isCancelled?.(err)) {
@@ -1939,9 +2002,11 @@ body {
       io.post({ type: "cropError", tupleIndex: msg.tupleIndex, error: "Failed to crop any images" });
       return;
     }
-    for (const s of saved) await io.arriveFile(s);
+    if (behaviour.cropsJoin) {
+      for (const s of saved) await io.arriveFile(s);
+    }
     io.post({ type: "cropComplete", tupleIndex: msg.tupleIndex, count: saved.length, paths: saved.map((s) => s.path) });
-    await io.postCropThumbnails?.(saved);
+    if (behaviour.cropsJoin) await io.postCropThumbnails?.(saved);
   }
 
   // src/initPayload.ts
@@ -1975,7 +2040,8 @@ body {
       votingEnabled: args.votingEnabled,
       labelsExplicit: args.labelsExplicit,
       version: args.version,
-      capabilities: args.capabilities
+      capabilities: args.capabilities,
+      deleteUnit: args.deleteUnit
     };
   }
 
@@ -2115,6 +2181,21 @@ body {
     if (stillIndex >= 0 && !modalityHasFiles(scan.tuples, modality)) {
       io.removeModality(asOriginal(stillIndex));
     }
+  }
+  async function deleteSlotFlow(scan, winners, tupleIndex, modalityIndex, io) {
+    const tuple = scan.tuples[tupleIndex];
+    const modality = scan.modalities[modalityIndex];
+    if (!tuple || !modality) return;
+    const image = tuple.images.find((img) => img.modality === modality);
+    if (!image) return;
+    try {
+      await io.deleteFile(image);
+    } catch {
+    }
+    const liveTuple = scan.tuples.indexOf(tuple);
+    const liveModality = scan.modalities.indexOf(modality);
+    if (liveTuple < 0 || liveModality < 0) return;
+    commitSlotRemoval(scan, winners, liveTuple, liveModality, io);
   }
   function modalityHasFiles(tuples, modality) {
     return tuples.some((tuple) => tuple.images.some((img) => img.modality === modality));
@@ -3030,6 +3111,7 @@ body {
   }
   async function saveResults(s) {
     if (!s.fs.writable) return;
+    if (!MODES[s.scan.mode].voting) return;
     await persistResults(s.scan.tuples, s.scan.modalities, s.winners, {
       writeText: (text) => s.fs.writeFile(resultsPath(s), new TextEncoder().encode(text)),
       deleteFile: () => s.fs.delete(resultsPath(s))
@@ -3079,6 +3161,18 @@ body {
       deleteFile: (img) => s.fs.delete(img.uri.path),
       removeTuple: (idx) => removeTupleAt(s, idx),
       removeModality: (idx) => removeModalityAt(s, idx)
+    });
+  }
+  async function handleDeleteImage(s, tupleIndex, modalityIndex) {
+    if (!s.fs.writable) return;
+    await deleteSlotFlow(s.scan, s.winners, tupleIndex, modalityIndex, {
+      deleteFile: (img) => s.fs.delete(img.uri.path),
+      post,
+      removeTuple: (idx) => removeTupleAt(s, idx),
+      removeModality: (idx) => removeModalityAt(s, idx),
+      saveResults: () => {
+        void saveResults(s);
+      }
     });
   }
   async function handleCropImages(s, tupleIndex, cropRect, srcWidth, srcHeight) {
@@ -3228,7 +3322,7 @@ body {
     if (modality === void 0) return;
     const tuple = ctx.section === "image" ? s.scan.tuples[ctx.tupleIndex] : void 0;
     const img = tuple ? findImageForModality(tuple, modality) : void 0;
-    const target = img ? img.uri.path : `${s.basePath}/${modality}`;
+    const target = img ? img.uri.path : modalityPath(s, modality);
     try {
       await navigator.clipboard.writeText(target);
       postNotice({ kind: "pathCopied" });
@@ -3241,7 +3335,7 @@ body {
     post(msg);
   }
   async function sendInit(s) {
-    const votingEnabled = s.fs.writable;
+    const votingEnabled = MODES[s.scan.mode].voting && s.fs.writable;
     if (votingEnabled) {
       try {
         const text = new TextDecoder().decode(await s.fs.readFile(resultsPath(s)));
@@ -3253,14 +3347,16 @@ body {
     post(buildInitPayload({
       tuples: s.scan.tuples,
       modalities: s.scan.modalities,
-      modalityPaths: s.scan.modalities.map((m) => `${s.basePath}/${m}`),
+      modalityPaths: s.scan.modalities.map((m) => modalityPath(s, m)),
       winners: s.winners,
       config: { thumbnailSize: THUMBNAIL_SIZE, prefetchCount: PREFETCH_COUNT, keepZoomOnTupleChange: false },
       votingEnabled,
       labelsExplicit: false,
       version: "0.4.1",
       // No file tree to reveal into and no session file to copy; text clipboard is the browser's (docs/standalone.md: affordances-rendered-by-the-webview).
-      capabilities: { revealInExplorer: false, copyTextToClipboard: true, saveSessionAs: false }
+      capabilities: { revealInExplorer: false, copyTextToClipboard: true, saveSessionAs: false },
+      // What Del removes here, stated rather than inferred by the webview (docs/session-files.md: mode-behaviour-is-a-table).
+      deleteUnit: MODES[s.scan.mode].deleteUnit
     }));
     void generateAllThumbnails(s);
   }
@@ -3292,6 +3388,9 @@ body {
         break;
       case "deleteTuple":
         await handleDeleteTuple(s, message.tupleIndex);
+        break;
+      case "deleteImage":
+        await handleDeleteImage(s, message.tupleIndex, message.modalityIndex);
         break;
       case "exportPptx":
         await handleExportPptx(s, message.tupleIndices, message.winnerModalityIndices, message.modalityOrder);
@@ -3408,6 +3507,14 @@ body {
     for (const [t, m] of s.winners) winners[t] = asOriginal(m);
     post({ type: "winnersReset", winners });
   }
+  function modalityPath(s, modality) {
+    if (!MODES[s.scan.mode].columnIsFile) return `${s.basePath}/${modality}`;
+    for (const tuple of s.scan.tuples) {
+      const img = findImageForModality(tuple, modality);
+      if (img) return img.uri.path;
+    }
+    return `${s.basePath}/${modality}`;
+  }
   function knownEntries(s, modality) {
     const entries = [];
     for (const tuple of s.scan.tuples) {
@@ -3417,7 +3524,7 @@ body {
     return entries;
   }
   async function adoptNewModalityDirs(s) {
-    if (s.scan.mode !== 1) return;
+    if (!MODES[s.scan.mode].rootSubdirsAreColumns) return;
     let rootEntries;
     try {
       rootEntries = await s.fs.readDirectory(s.basePath);
@@ -3524,6 +3631,7 @@ body {
   }
   function startPolling(s, root) {
     if (!s.fs.writable) return;
+    if (!MODES[s.scan.mode].rootSubdirsAreColumns) return;
     s.pollTimer = setInterval(() => schedulePollCycle(s), seam.pollIntervalMs);
     const Observer = window.FileSystemObserver;
     if (typeof Observer !== "function" || !root.handle) return;
@@ -3552,7 +3660,8 @@ body {
     const scan = await scanForImages([Uri.file(root.rootPath)]);
     const s = {
       fs: root.fs,
-      basePath: scan.roots[0].path,
+      // The opened directory, never `roots[0]` — a file-list scan's roots are the files (docs/session-files.md: mode-is-explicit).
+      basePath: Uri.file(root.rootPath).path,
       scan,
       winners: /* @__PURE__ */ new Map(),
       currentTupleIndex: 0,
@@ -4857,6 +4966,7 @@ const helpVersionEl = document.getElementById('help-version');
 const helpBtn = document.getElementById('help-btn');
 const helpContextMenuItemsEl = document.getElementById('help-contextmenu-items');
 const helpRowSaveSessionEl = document.getElementById('help-row-savesession');
+const helpDeleteTextEl = document.getElementById('help-delete-text');
 const closeHelpBtn = document.getElementById('close-help-btn');
 const reorderLeftBtn = document.getElementById('reorder-left');
 const reorderRightBtn = document.getElementById('reorder-right');
@@ -4931,6 +5041,8 @@ function setPptxBusy(busy) {
 let labelsExplicit = false;
 // What this host can serve. Capability, never identity: no branch here asks whether it is VS Code (docs/standalone.md: affordances-rendered-by-the-webview).
 let capabilities = _contextMenuModel__WEBPACK_IMPORTED_MODULE_6__.NO_HOST_CAPABILITIES;
+// What Del removes here, stated by the host; an init that names none means a row, the shape every mode but the file list has (docs/session-files.md: mode-behaviour-is-a-table).
+let deleteUnit = 'tuple';
 // Read-only state snapshot for the Playwright webview testbed (test/webview); inert unless the harness sets __ic_test_enabled — see docs/testing.md.
 if (typeof window !== 'undefined' && window.__ic_test_enabled) {
     window.__ic_test = {
@@ -4950,6 +5062,7 @@ if (typeof window !== 'undefined' && window.__ic_test_enabled) {
             cropRect: _crop__WEBPACK_IMPORTED_MODULE_0__.cropRect ? { ..._crop__WEBPACK_IMPORTED_MODULE_0__.cropRect } : null,
             winners: Array.from(winners.entries()),
             votingEnabled,
+            deleteUnit,
             pptxBusy,
             thumbUrlsLive: thumbnailUrls.liveCount,
             capabilities: { ...capabilities },
@@ -5064,7 +5177,7 @@ function setupEventListeners() {
         }
     });
     // Delete button
-    deleteBtn.addEventListener('click', deleteCurrentTuple);
+    deleteBtn.addEventListener('click', deleteCurrent);
     // PPTX export button
     pptxBtn.addEventListener('click', () => {
         if (pptxBusy)
@@ -5093,9 +5206,23 @@ function setupEventListeners() {
         vscode.postMessage({ type: 'exportPptx', tupleIndices, winnerModalityIndices, modalityOrder });
     });
 }
-// Delete the current tuple's files from disk (no confirmation, per user choice)
-function deleteCurrentTuple() {
+// Delete what Del removes here from disk (no confirmation, per user choice): the row, or the one image on screen.
+function deleteCurrent() {
+    if (deleteUnit === 'image') {
+        vscode.postMessage({
+            type: 'deleteImage',
+            tupleIndex: currentTupleIndex,
+            modalityIndex: toOriginal(currentModalityIndex, modalityOrder),
+        });
+        return;
+    }
     vscode.postMessage({ type: 'deleteTuple', tupleIndex: currentTupleIndex });
+}
+/** The button hint and the help row say what Del will actually take here, so neither can promise the wrong unit. */
+function applyDeleteUnitToAffordances() {
+    const what = deleteUnit === 'image' ? 'current image file' : 'current tuple files';
+    deleteBtn.setAttribute('title', `Delete ${what} (Del)`);
+    helpDeleteTextEl.textContent = `Delete ${what} (permanent!)`;
 }
 // Crop confirmation callback
 function handleCropConfirm() {
@@ -5246,7 +5373,9 @@ function handleInit(message) {
     // Absent/empty version renders nothing: the :empty CSS rule hides the footer entirely.
     helpVersionEl.textContent = message.version ? `ImageCompare v${message.version}` : '';
     capabilities = message.capabilities ?? _contextMenuModel__WEBPACK_IMPORTED_MODULE_6__.NO_HOST_CAPABILITIES;
+    deleteUnit = message.deleteUnit ?? 'tuple';
     applyCapabilitiesToHelp();
+    applyDeleteUnitToAffordances();
     // Reset all state for new comparison
     tuples = message.tuples;
     modalities = message.modalities;
@@ -7024,12 +7153,12 @@ function handleKeyDown(e) {
             break;
         case 'Delete':
         case 'Backspace': {
-            // Del deletes the current tuple's files, same as the Tools-panel Delete button
+            // Del removes whatever the Tools-panel Delete button removes, which the host stated on init
             const active = document.activeElement;
             if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable))
                 break;
             e.preventDefault();
-            deleteCurrentTuple();
+            deleteCurrent();
             break;
         }
     }
