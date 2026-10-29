@@ -178,7 +178,7 @@ body {
   background: var(--vscode-button-background, #0078d4);
   color: var(--vscode-button-foreground, #fff);
 }
-#delete-btn, #pptx-btn {
+#delete-btn, #pptx-btn, #results-btn {
   padding: 3px 8px;
   background: var(--vscode-button-secondaryBackground, #444);
   color: var(--vscode-button-secondaryForeground, #fff);
@@ -188,7 +188,9 @@ body {
   font-size: 11px;
 }
 #delete-btn:hover { background: #a33; }
+#delete-btn:disabled { opacity: 0.4; cursor: default; background: var(--vscode-button-secondaryBackground, #444); }
 #pptx-btn:hover { background: #383; }
+#results-btn:hover { background: #335; }
 #pptx-btn.busy {
   position: relative;
   color: transparent;
@@ -730,6 +732,7 @@ body {
           <button id="crop-btn" title="Crop all modalities (C)">Crop</button>
           <button id="delete-btn" title="Delete current tuple files (Del)">Delete</button><!-- title restated on init: what Del removes is the host's to say (docs/session-files.md: mode-behaviour-is-a-table) -->
           <button id="pptx-btn" title="Export voted tuples to PPTX">PPTX</button>
+          <button id="results-btn" title="Copy results.txt to the clipboard" hidden>results.txt</button>
         </div>
       </div>
     </div>
@@ -893,6 +896,37 @@ body {
     }
   };
 
+  // standalone/hostRegimes.ts
+  var MB = 1e6;
+  var HOST_REGIMES = {
+    static: {
+      capabilities: { exportPptx: true, copyResults: true },
+      limits: null
+    },
+    "claude-artifact": {
+      // Every page-initiated download is blocked in the artifact frame; the clipboard works for every viewer.
+      capabilities: { exportPptx: false, copyResults: true },
+      limits: {
+        imageExtensions: [".png", ".jpg", ".jpeg", ".gif", ".webp"],
+        maxFilesPerVersion: 511,
+        maxBytesPerVersion: 256 * MB,
+        maxBytesPerImage: 15 * MB,
+        maxBytesPerTextFile: 16 * MB,
+        maxFilesPerPublish: 255,
+        maxBytesPerPublish: 64 * MB
+      }
+    }
+  };
+  var DEFAULT_HOST_REGIME = "static";
+  function isHostRegimeName(name) {
+    return typeof name === "string" && Object.prototype.hasOwnProperty.call(HOST_REGIMES, name);
+  }
+
+  // standalone/publishedPath.ts
+  function isPublishedPath(file) {
+    return !(typeof file !== "string" || /^\/|^[a-z][a-z0-9+.-]*:|\\/i.test(file) || file.split("/").some((s) => s === "." || s === ".." || s === ""));
+  }
+
   // standalone/fsBackends.ts
   function splitPath(rootPath, path) {
     if (path !== rootPath && !path.startsWith(rootPath + "/")) {
@@ -965,7 +999,7 @@ body {
         return { mtime: file.lastModified, size: file.size };
       }
     };
-    return { fs, rootPath, rootName: root.name || "folder", handle: root };
+    return { fs, rootPath, rootName: root.name || "folder", handle: root, isReadOnly: () => false };
   }
   function entryFile(entry) {
     return new Promise((resolve2, reject) => entry.file(resolve2, reject));
@@ -991,6 +1025,35 @@ body {
     const files = [];
     await walkEntry(root, files);
     return createFileListBackend(files);
+  }
+  function assertRelativePaths(paths) {
+    for (const file of paths) {
+      if (!isPublishedPath(file)) {
+        throw new Error(`imagecompare.json: not a relative path inside the page's directory: ${JSON.stringify(file)}`);
+      }
+    }
+  }
+  function parsePublishedManifest(text) {
+    let manifest;
+    try {
+      manifest = JSON.parse(text);
+    } catch {
+      throw new Error("imagecompare.json: not valid JSON");
+    }
+    const { files, host, thumbs } = manifest ?? {};
+    if (!Array.isArray(files) || files.length === 0) throw new Error('imagecompare.json: must list "files"');
+    assertRelativePaths(files);
+    if (host !== void 0 && !isHostRegimeName(host)) throw new Error(`imagecompare.json: unknown "host": ${JSON.stringify(host)}`);
+    if (thumbs !== void 0 && (!Array.isArray(thumbs) || thumbs.length === 0)) throw new Error('imagecompare.json: "thumbs" must list files');
+    if (thumbs !== void 0) assertRelativePaths(thumbs);
+    return { files, host: host ?? DEFAULT_HOST_REGIME, thumbs: thumbs ?? [] };
+  }
+  function createPublishedBackend(files, fetchFile) {
+    return createFileListBackend(files.map((path) => ({
+      name: path.split("/").pop(),
+      webkitRelativePath: `comparison/${path}`,
+      arrayBuffer: () => fetchFile(path)
+    })));
   }
   function createFileListBackend(files) {
     const byPath = /* @__PURE__ */ new Map();
@@ -1042,7 +1105,177 @@ body {
         throw new Error("This directory was opened read-only");
       }
     };
-    return { fs, rootPath, rootName };
+    return { fs, rootPath, rootName, isReadOnly: () => true };
+  }
+
+  // standalone/viewerLayer.ts
+  function viewerLayerNamespace(manifestUrl) {
+    const url = new URL(manifestUrl);
+    url.search = "";
+    url.hash = "";
+    return url.href.substring(0, url.href.lastIndexOf("/") + 1);
+  }
+  var IDB_NAME = "imagecompare-viewer-layer";
+  var IDB_STORE = "files";
+  function indexedDbLayerStore() {
+    let db;
+    const open = () => {
+      db ??= new Promise((resolve2, reject) => {
+        const request = indexedDB.open(IDB_NAME, 1);
+        request.onupgradeneeded = () => request.result.createObjectStore(IDB_STORE);
+        request.onsuccess = () => resolve2(request.result);
+        request.onerror = () => reject(request.error ?? new Error("IndexedDB open failed"));
+      });
+      return db;
+    };
+    const key = (namespace, path) => `${namespace}\0${path}`;
+    const run = async (mode, act) => {
+      const tx = (await open()).transaction(IDB_STORE, mode);
+      act(tx.objectStore(IDB_STORE));
+      await new Promise((resolve2, reject) => {
+        tx.oncomplete = () => resolve2();
+        tx.onerror = () => reject(tx.error ?? new Error("IndexedDB transaction failed"));
+        tx.onabort = () => reject(tx.error ?? new Error("IndexedDB transaction aborted"));
+      });
+    };
+    return {
+      load: async (namespace) => {
+        const out = [];
+        const prefix = key(namespace, "");
+        await run("readonly", (store) => {
+          const cursor = store.openCursor(IDBKeyRange.bound(prefix, `${namespace}`, false, true));
+          cursor.onsuccess = () => {
+            const c = cursor.result;
+            if (!c) return;
+            out.push([String(c.key).substring(prefix.length), new Uint8Array(c.value)]);
+            c.continue();
+          };
+        });
+        return out;
+      },
+      put: (namespace, path, bytes) => run("readwrite", (store) => {
+        store.put(bytes.slice().buffer, key(namespace, path));
+      }),
+      remove: (namespace, path) => run("readwrite", (store) => {
+        store.delete(key(namespace, path));
+      })
+    };
+  }
+  async function createViewerLayer(base, listedPaths, store, namespace) {
+    const prefix = `${base.rootPath}/`;
+    const listedDirs = /* @__PURE__ */ new Set();
+    for (const path of listedPaths) {
+      for (let cut = path.indexOf("/", prefix.length); cut >= 0; cut = path.indexOf("/", cut + 1)) listedDirs.add(path.substring(0, cut));
+    }
+    const layer = /* @__PURE__ */ new Map();
+    let persistent = true;
+    try {
+      for (const [rel, bytes] of await store.load(namespace)) layer.set(prefix + rel, bytes);
+    } catch {
+      persistent = false;
+    }
+    const persist = (act) => {
+      if (!persistent) return Promise.resolve();
+      return act().catch(() => void 0);
+    };
+    const refuseListed = (path) => {
+      if (!path.startsWith(prefix)) throw new Error(`Path outside the comparison: ${path}`);
+      if (listedPaths.has(path) || listedDirs.has(path)) throw new Error(`Published files are read-only: ${path}`);
+    };
+    const layerChildren = (dir) => {
+      const out = /* @__PURE__ */ new Map();
+      const dirPrefix = `${dir}/`;
+      for (const path of layer.keys()) {
+        if (!path.startsWith(dirPrefix)) continue;
+        const rest = path.substring(dirPrefix.length);
+        const cut = rest.indexOf("/");
+        if (cut < 0) out.set(rest, 1 /* File */);
+        else out.set(rest.substring(0, cut), 2 /* Directory */);
+      }
+      return out;
+    };
+    const fs = {
+      writable: true,
+      stat: async (path) => {
+        try {
+          return await base.fs.stat(path);
+        } catch (err) {
+          if (layer.has(path)) return 1 /* File */;
+          if (path === base.rootPath || layerChildren(path).size > 0) return 2 /* Directory */;
+          throw err;
+        }
+      },
+      readDirectory: async (path) => {
+        let listed;
+        try {
+          listed = await base.fs.readDirectory(path);
+        } catch (err) {
+          if (path !== base.rootPath && layerChildren(path).size === 0) throw err;
+        }
+        const merged = new Map(listed ?? []);
+        for (const [name, type] of layerChildren(path)) if (!merged.has(name)) merged.set(name, type);
+        return [...merged];
+      },
+      readFile: async (path) => layer.get(path)?.slice() ?? base.fs.readFile(path),
+      writeFile: async (path, content) => {
+        refuseListed(path);
+        const bytes = content.slice();
+        layer.set(path, bytes);
+        await persist(() => store.put(namespace, path.substring(prefix.length), bytes));
+      },
+      delete: async (path) => {
+        refuseListed(path);
+        if (!layer.delete(path)) throw new Error(`No such file: ${path}`);
+        await persist(() => store.remove(namespace, path.substring(prefix.length)));
+      }
+    };
+    return { fs, rootPath: base.rootPath, rootName: base.rootName, isReadOnly: (path) => listedPaths.has(path) };
+  }
+
+  // standalone/packedThumbs.ts
+  var PACKED_THUMBS_FORMAT = "imagecompare-thumbs-1";
+  var THUMBNAIL_SIZE = 100;
+  var THUMBNAIL_JPEG_QUALITY = 80;
+  function thumbnailMimeFor(name) {
+    return name.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+  }
+  function parsePackedThumbs(text) {
+    const parsed = JSON.parse(text);
+    if (parsed?.format !== PACKED_THUMBS_FORMAT) throw new Error(`not an ${PACKED_THUMBS_FORMAT} file`);
+    const entries = parsed.entries;
+    if (typeof entries !== "object" || entries === null || Array.isArray(entries)) throw new Error("no entries");
+    const out = /* @__PURE__ */ new Map();
+    for (const [path, entry] of Object.entries(entries)) {
+      const e = entry;
+      if ((e?.mime === "image/png" || e?.mime === "image/jpeg") && typeof e.data === "string" && e.data.length > 0) {
+        out.set(path, { mime: e.mime, data: e.data });
+      }
+    }
+    return out;
+  }
+  var PACKED_THUMBS_TIMEOUT_MS = 2e4;
+  async function loadPackedThumbs(paths, fetchText, timeoutMs = PACKED_THUMBS_TIMEOUT_MS) {
+    const withDeadline = (path) => new Promise((resolve2, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${path}: timed out`)), timeoutMs);
+      fetchText(path).then(resolve2, reject).finally(() => clearTimeout(timer));
+    });
+    const loaded = await Promise.allSettled(paths.map(async (path) => parsePackedThumbs(await withDeadline(path))));
+    const merged = /* @__PURE__ */ new Map();
+    for (const result of loaded) {
+      if (result.status !== "fulfilled") continue;
+      for (const [path, entry] of result.value) merged.set(path, entry);
+    }
+    return merged;
+  }
+  function decodePackedThumb(entry) {
+    try {
+      const binary = atob(entry.data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes.length > 0 ? bytes : null;
+    } catch {
+      return null;
+    }
   }
 
   // src/types.ts
@@ -1256,58 +1489,6 @@ body {
     return existing.length;
   }
 
-  // src/cropPlan.ts
-  var CROP_SUFFIX_RE = /_crop\d+$/;
-  function escapeRegExp(s) {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-  function nextCropName(existingNamesPerModality, tupleName) {
-    const cropPattern = new RegExp(`^${escapeRegExp(tupleName)}_crop(\\d+)\\.`);
-    const cropNums = existingNamesPerModality.map((names) => {
-      let maxNum = 0;
-      for (const name of names) {
-        const match = name.match(cropPattern);
-        if (match) {
-          maxNum = Math.max(maxNum, parseInt(match[1], 10));
-        }
-      }
-      return maxNum + 1;
-    });
-    const cropNum = Math.max(...cropNums);
-    const cropSuffix = `_crop${String(cropNum).padStart(2, "0")}`;
-    return `${tupleName}${cropSuffix}.png`;
-  }
-  function stemOf(filename) {
-    return filename.replace(/\.[^./]+$/, "");
-  }
-  function cropNamesPerImage(existingNamesPerModality, imageNames) {
-    const listings = existingNamesPerModality.map((names) => [...names]);
-    return imageNames.map((imageName, i) => {
-      const name = nextCropName([listings[i] ?? []], stemOf(imageName));
-      for (const listing of listings) listing.push(name);
-      return name;
-    });
-  }
-  function toRelativeRect(rect, srcWidth, srcHeight) {
-    return {
-      x: rect.x / srcWidth,
-      y: rect.y / srcHeight,
-      w: rect.w / srcWidth,
-      h: rect.h / srcHeight
-    };
-  }
-  function scaleAndClampRect(relRect, width, height) {
-    const scaledRect = {
-      x: Math.max(0, Math.round(relRect.x * width)),
-      y: Math.max(0, Math.round(relRect.y * height)),
-      w: Math.round(relRect.w * width),
-      h: Math.round(relRect.h * height)
-    };
-    scaledRect.w = Math.min(scaledRect.w, width - scaledRect.x);
-    scaledRect.h = Math.min(scaledRect.h, height - scaledRect.y);
-    return scaledRect;
-  }
-
   // src/modePolicy.ts
   var MODES = {
     // One directory whose subdirectories are the columns.
@@ -1352,6 +1533,62 @@ body {
       cropsJoin: false
     }
   };
+
+  // src/cropPlan.ts
+  var CROP_SUFFIX_RE = /_crop\d+$/;
+  function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  function nextCropName(existingNamesPerModality, tupleName) {
+    const cropPattern = new RegExp(`^${escapeRegExp(tupleName)}_crop(\\d+)\\.`);
+    const cropNums = existingNamesPerModality.map((names) => {
+      let maxNum = 0;
+      for (const name of names) {
+        const match = name.match(cropPattern);
+        if (match) {
+          maxNum = Math.max(maxNum, parseInt(match[1], 10));
+        }
+      }
+      return maxNum + 1;
+    });
+    const cropNum = Math.max(...cropNums);
+    const cropSuffix = `_crop${String(cropNum).padStart(2, "0")}`;
+    return `${tupleName}${cropSuffix}.png`;
+  }
+  function stemOf(filename) {
+    return filename.replace(/\.[^./]+$/, "");
+  }
+  function enumeratedImages(files) {
+    const withoutCrops = files.filter((file) => !CROP_SUFFIX_RE.test(stemOf(file.name)));
+    return withoutCrops.length >= MODES[3].minColumns ? withoutCrops : files;
+  }
+  function cropNamesPerImage(existingNamesPerModality, imageNames) {
+    const listings = existingNamesPerModality.map((names) => [...names]);
+    return imageNames.map((imageName, i) => {
+      const name = nextCropName([listings[i] ?? []], stemOf(imageName));
+      for (const listing of listings) listing.push(name);
+      return name;
+    });
+  }
+  function toRelativeRect(rect, srcWidth, srcHeight) {
+    return {
+      x: rect.x / srcWidth,
+      y: rect.y / srcHeight,
+      w: rect.w / srcWidth,
+      h: rect.h / srcHeight
+    };
+  }
+  function scaleAndClampRect(relRect, width, height) {
+    const scaledRect = {
+      x: Math.max(0, Math.round(relRect.x * width)),
+      y: Math.max(0, Math.round(relRect.y * height)),
+      w: Math.round(relRect.w * width),
+      h: Math.round(relRect.h * height)
+    };
+    scaledRect.w = Math.min(scaledRect.w, width - scaledRect.x);
+    scaledRect.h = Math.min(scaledRect.h, height - scaledRect.y);
+    return scaledRect;
+  }
 
   // src/fileService.ts
   function debugLog(...args) {
@@ -1731,8 +1968,7 @@ body {
     })));
   }
   function scanEnumeratedFiles(files) {
-    const withoutCrops = files.filter((file) => !CROP_SUFFIX_RE.test(stripExtension(file.name)));
-    const chosen = withoutCrops.length >= MODES[3].minColumns ? withoutCrops : files;
+    const chosen = enumeratedImages(files);
     if (chosen.length < MODES[3].minColumns) {
       throw new Error("This directory holds one image; a comparison needs at least 2.");
     }
@@ -2010,7 +2246,7 @@ body {
   }
 
   // src/initPayload.ts
-  function denseTupleInfo(tuple, tupleIndex, modalities) {
+  function denseTupleInfo(tuple, tupleIndex, modalities, isReadOnly) {
     return {
       name: tuple.name,
       images: modalities.map((modality, modalityIndex) => {
@@ -2019,7 +2255,9 @@ body {
           name: img?.name || "",
           modality,
           tupleIndex: asTuple(tupleIndex),
-          modalityIndex: asOriginal(modalityIndex)
+          modalityIndex: asOriginal(modalityIndex),
+          // Only a real file the host says it cannot delete is flagged; no predicate leaves the wire as it was (docs/standalone.md: published-originals-never-written).
+          ...img && isReadOnly?.(tupleIndex, modality) ? { readOnly: true } : {}
         };
       })
     };
@@ -2031,7 +2269,7 @@ body {
     }
     return {
       type: "init",
-      tuples: args.tuples.map((tuple, tupleIndex) => denseTupleInfo(tuple, tupleIndex, args.modalities)),
+      tuples: args.tuples.map((tuple, tupleIndex) => denseTupleInfo(tuple, tupleIndex, args.modalities, args.isReadOnly)),
       modalities: [...args.modalities],
       modalityPaths: [...args.modalityPaths],
       modalityColors: args.modalities.map((m, i) => args.colorOverride?.(m, i) || MODALITY_COLORS[i % MODALITY_COLORS.length]),
@@ -2935,6 +3173,7 @@ body {
   }
 
   // standalone/adapter.ts
+  var OPENED_FOLDER_CAPABILITIES = { exportPptx: true, copyResults: false };
   var state;
   var webviewReady = false;
   var pool = new WorkPool(poolWidth(navigator.hardwareConcurrency || 4));
@@ -2944,7 +3183,6 @@ body {
     verbose: /[?&]debug=verbose\b/.test(location.search),
     sink: (line) => console.log(line)
   });
-  var THUMBNAIL_SIZE = 100;
   var PREFETCH_COUNT = 3;
   window.acquireVsCodeApi = () => ({
     postMessage: (m) => {
@@ -3005,13 +3243,22 @@ body {
     });
   }
   var canvasToPngBytes = (canvas) => canvasToBytes(canvas, "image/png");
-  async function thumbnailBytes(s, img) {
+  async function packedThumbnail(s, img) {
+    if (!s.published || !s.isReadOnly(img.uri.path)) return null;
+    const entry = (await s.published.thumbs).get(img.uri.path.substring(s.basePath.length + 1));
+    const bytes = entry ? decodePackedThumb(entry) : null;
+    return bytes && entry ? { bytes: normalizeImageBytes(bytes), mime: entry.mime } : null;
+  }
+  async function thumbnailBytes(s, img, options) {
+    return await packedThumbnail(s, img) ?? pool.submit(() => decodedThumbnail(s, img), options);
+  }
+  async function decodedThumbnail(s, img) {
     const bytes = await s.fs.readFile(img.uri.path);
     const dec = await decodeFile(bytes, img.name);
     const canvas = drawScaled(dec, THUMBNAIL_SIZE * 2);
     dec.close();
-    const mime = extOf(img.name) === ".png" ? "image/png" : "image/jpeg";
-    return { bytes: normalizeImageBytes(await canvasToBytes(canvas, mime, 0.8)), mime };
+    const mime = thumbnailMimeFor(img.name);
+    return { bytes: normalizeImageBytes(await canvasToBytes(canvas, mime, THUMBNAIL_JPEG_QUALITY / 100)), mime };
   }
   function newSweepAimPolicy() {
     return new SweepAimPolicy({
@@ -3022,10 +3269,13 @@ body {
   function generateAllThumbnails(s) {
     s.sweepAim.noteSweepStart(s.currentTupleIndex);
     return runThumbnailSweep(planThumbnails(s.scan.tuples, s.scan.modalities), {
-      makeThumbnail: (item) => pool.submit(() => thumbnailBytes(s, item.image), { priority: 5 /* THUMBNAIL_BULK */, key: sweepPoolKey(s), group: s.poolKey }).catch((error) => {
-        if (error instanceof TaskCancelled) return s.closed ? null : SWEEP_REQUEUE;
-        throw error;
-      }),
+      makeThumbnail: (item) => (
+        // The session is the fair-share bucket, as the panel is in the provider (docs/loading-architecture.md: bulk-sweeps-share-the-pool).
+        thumbnailBytes(s, item.image, { priority: 5 /* THUMBNAIL_BULK */, key: sweepPoolKey(s), group: s.poolKey }).catch((error) => {
+          if (error instanceof TaskCancelled) return s.closed ? null : SWEEP_REQUEUE;
+          throw error;
+        })
+      ),
       // The mechanism is the pool's; the decision to use it is the shared module's (docs/loading-architecture.md: sweep-cancels-on-reaim).
       dropQueued: () => pool.cancel(sweepPoolKey(s))
     }, post, {
@@ -3045,7 +3295,7 @@ body {
           continue;
         }
         try {
-          const thumb = await pool.submit(() => thumbnailBytes(s, img), { priority: 4 /* THUMBNAIL */, key: s.poolKey });
+          const thumb = await thumbnailBytes(s, img, { priority: 4 /* THUMBNAIL */, key: s.poolKey });
           post({ type: "thumbnail", tupleIndex, modalityIndex: asOriginal(modalityIndex), bytes: thumb.bytes, mime: thumb.mime });
         } catch (err) {
           if (err instanceof TaskCancelled) continue;
@@ -3113,8 +3363,14 @@ body {
     if (!s.fs.writable) return;
     if (!MODES[s.scan.mode].voting) return;
     await persistResults(s.scan.tuples, s.scan.modalities, s.winners, {
-      writeText: (text) => s.fs.writeFile(resultsPath(s), new TextEncoder().encode(text)),
-      deleteFile: () => s.fs.delete(resultsPath(s))
+      writeText: (text) => {
+        s.resultsText = text;
+        return s.fs.writeFile(resultsPath(s), new TextEncoder().encode(text));
+      },
+      deleteFile: () => {
+        s.resultsText = void 0;
+        return s.fs.delete(resultsPath(s));
+      }
     });
     await refreshResultsFingerprint(s);
   }
@@ -3229,7 +3485,7 @@ body {
           const img = newTuple ? findImageForModality(newTuple, f.modality) : void 0;
           if (!img || modalityIndex < 0) continue;
           try {
-            const thumb = await pool.submit(() => thumbnailBytes(s, img), { priority: 4 /* THUMBNAIL */, key: s.poolKey });
+            const thumb = await thumbnailBytes(s, img, { priority: 4 /* THUMBNAIL */, key: s.poolKey });
             post({ type: "thumbnail", tupleIndex: asTuple(newTupleIndex), modalityIndex: asOriginal(modalityIndex), bytes: thumb.bytes, mime: thumb.mime });
           } catch (err) {
             if (err instanceof TaskCancelled) continue;
@@ -3316,6 +3572,34 @@ body {
       isCancelled: (err) => err instanceof TaskCancelled || state !== s
     });
   }
+  function copyText(text) {
+    if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    const copied = document.execCommand("copy");
+    area.remove();
+    focused?.focus();
+    return copied ? Promise.resolve() : Promise.reject(new Error("the browser refused to copy"));
+  }
+  function handleCopyResults(s) {
+    if (s.winners.size === 0) {
+      postNotice({ kind: "noVotesToCopy" });
+      return;
+    }
+    const votes = s.winners.size;
+    const text = s.resultsText ?? serializeResults(s.scan.tuples, winnersToNames(s.winners, s.scan.modalities), s.scan.modalities);
+    const failed = (e) => postNotice({ kind: "copyResultsFailed", error: e instanceof Error ? e.message : String(e) });
+    try {
+      copyText(text).then(() => postNotice({ kind: "resultsCopied", votes }), failed);
+    } catch (e) {
+      failed(e);
+    }
+  }
   async function handleMenuAction(s, action, ctx) {
     if (action !== "copyPath") return;
     const modality = s.scan.modalities[ctx.modalityIndex];
@@ -3323,8 +3607,9 @@ body {
     const tuple = ctx.section === "image" ? s.scan.tuples[ctx.tupleIndex] : void 0;
     const img = tuple ? findImageForModality(tuple, modality) : void 0;
     const target = img ? img.uri.path : modalityPath(s, modality);
+    const text = s.published && (!img || s.isReadOnly(target)) ? publishedUrl(target.substring(s.basePath.length + 1)) : target;
     try {
-      await navigator.clipboard.writeText(target);
+      await copyText(text);
       postNotice({ kind: "pathCopied" });
     } catch (e) {
       postNotice({ kind: "copyPathFailed", error: e instanceof Error ? e.message : String(e) });
@@ -3340,6 +3625,7 @@ body {
       try {
         const text = new TextDecoder().decode(await s.fs.readFile(resultsPath(s)));
         s.winners = new Map(mapWinnersToIndices(parseResults(text), s.scan.tuples, s.scan.modalities));
+        s.resultsText = text;
       } catch {
       }
       await refreshResultsFingerprint(s);
@@ -3353,10 +3639,15 @@ body {
       votingEnabled,
       labelsExplicit: false,
       version: "0.5.0",
-      // No file tree to reveal into and no session file to copy; text clipboard is the browser's (docs/standalone.md: affordances-rendered-by-the-webview).
-      capabilities: { revealInExplorer: false, copyTextToClipboard: true, saveSessionAs: false },
+      // No file tree, no session file, the browser's text clipboard; a published comparison's export/copy flags are its regime row's (docs/standalone.md: affordances-rendered-by-the-webview) (docs/standalone.md: host-regime-is-one-table).
+      capabilities: { revealInExplorer: false, copyTextToClipboard: true, saveSessionAs: false, ...s.published?.capabilities ?? OPENED_FOLDER_CAPABILITIES },
       // What Del removes here, stated rather than inferred by the webview (docs/session-files.md: mode-behaviour-is-a-table).
-      deleteUnit: MODES[s.scan.mode].deleteUnit
+      deleteUnit: MODES[s.scan.mode].deleteUnit,
+      // Whether a slot's file can be deleted is the root's to say; the webview greys Delete on it (docs/standalone.md: published-originals-never-written).
+      isReadOnly: (tupleIndex, modality) => {
+        const img = findImageForModality(s.scan.tuples[tupleIndex], modality);
+        return !!img && s.isReadOnly(img.uri.path);
+      }
     }));
     void generateAllThumbnails(s);
   }
@@ -3405,6 +3696,9 @@ body {
       case "menuAction":
         await handleMenuAction(s, message.action, message.ctx);
         break;
+      case "copyResults":
+        handleCopyResults(s);
+        break;
       case "saveSessionAs":
       case "revealPath":
       case "log":
@@ -3428,7 +3722,7 @@ body {
     const img = tuple && modality ? findImageForModality(tuple, modality) : void 0;
     if (!img) return;
     try {
-      const thumb = await pool.submit(() => thumbnailBytes(s, img), { priority: 4 /* THUMBNAIL */, key: s.poolKey });
+      const thumb = await thumbnailBytes(s, img, { priority: 4 /* THUMBNAIL */, key: s.poolKey });
       post({ type: "thumbnail", tupleIndex, modalityIndex, bytes: thumb.bytes, mime: thumb.mime });
     } catch (err) {
       if (err instanceof TaskCancelled) return;
@@ -3630,7 +3924,7 @@ body {
     s.observer = void 0;
   }
   function startPolling(s, root) {
-    if (!s.fs.writable) return;
+    if (!s.fs.writable || s.published) return;
     if (!MODES[s.scan.mode].rootSubdirsAreColumns) return;
     s.pollTimer = setInterval(() => schedulePollCycle(s), seam.pollIntervalMs);
     const Observer = window.FileSystemObserver;
@@ -3647,7 +3941,7 @@ body {
     } catch {
     }
   }
-  async function openRoot(root) {
+  async function openRoot(root, published) {
     if (state) {
       stopPolling(state);
       state.closed = true;
@@ -3660,6 +3954,8 @@ body {
     const scan = await scanForImages([Uri.file(root.rootPath)]);
     const s = {
       fs: root.fs,
+      isReadOnly: (path) => root.isReadOnly(path),
+      published,
       // The opened directory, never `roots[0]` — a file-list scan's roots are the files (docs/session-files.md: mode-is-explicit).
       basePath: Uri.file(root.rootPath).path,
       scan,
@@ -3793,9 +4089,47 @@ body {
     pollIntervalMs: 4e3,
     open: (handle) => openRoot(createFsaBackend(handle)),
     // The drop handler's non-FSA branch, exposed because a synthetic DataTransfer cannot carry entries.
-    openDroppedEntry: async (entry) => openRoot(await createDroppedEntryBackend(entry))
+    openDroppedEntry: async (entry) => openRoot(await createDroppedEntryBackend(entry)),
+    // Settles once the published-comparison boot has opened, reported, or found nothing beside the page.
+    booted: openPublishedComparison()
   };
   window.__ic_standalone = seam;
+  function encodedPublishedPath(path) {
+    return path.split("/").map(encodeURIComponent).join("/");
+  }
+  function publishedUrl(path) {
+    return new URL(encodedPublishedPath(path), location.href).href;
+  }
+  async function fetchPublishedResponse(path) {
+    const response = await fetch(encodedPublishedPath(path));
+    if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+    return response;
+  }
+  async function fetchPublishedFile(path) {
+    return (await fetchPublishedResponse(path)).arrayBuffer();
+  }
+  async function openPublishedComparison() {
+    let response;
+    try {
+      response = await fetch("imagecompare.json", { cache: "no-cache" });
+    } catch {
+      return;
+    }
+    if (!response.ok || /text\/html/i.test(response.headers.get("content-type") ?? "")) return;
+    try {
+      const manifest = parsePublishedManifest(await response.text());
+      if (state) return;
+      const thumbs = loadPackedThumbs(manifest.thumbs, async (path) => (await fetchPublishedResponse(path)).text());
+      const listed = createPublishedBackend(manifest.files, fetchPublishedFile);
+      const namespace = viewerLayerNamespace(new URL("imagecompare.json", location.href).href);
+      const listedPaths = new Set(manifest.files.map((file) => `${listed.rootPath}/${file}`));
+      const root = await createViewerLayer(listed, listedPaths, indexedDbLayerStore(), namespace);
+      if (state) return;
+      await openRoot(root, { capabilities: HOST_REGIMES[manifest.host].capabilities, thumbs });
+    } catch (err) {
+      showLandingError(err);
+    }
+  }
 })();
 
 </script>
@@ -4586,6 +4920,8 @@ const NO_HOST_CAPABILITIES = {
     revealInExplorer: false,
     copyTextToClipboard: false,
     saveSessionAs: false,
+    exportPptx: false,
+    copyResults: false,
 };
 /** The reveal action's one label, shared with the notice channel so the item text has a single definition. */
 const REVEAL_LABEL = 'Reveal in Explorer';
@@ -4718,6 +5054,12 @@ function buildNotice(event, caps) {
             return { text: 'Path copied', tone: 'info' };
         case 'copyPathFailed':
             return { text: `Could not copy the path: ${event.error}`, tone: 'error' };
+        case 'resultsCopied':
+            return { text: `results.txt copied to the clipboard (${event.votes} ${event.votes === 1 ? 'vote' : 'votes'})`, tone: 'info' };
+        case 'noVotesToCopy':
+            return { text: 'No votes to copy yet', tone: 'info' };
+        case 'copyResultsFailed':
+            return { text: `Could not copy results.txt: ${event.error}`, tone: 'error' };
     }
 }
 
@@ -4953,6 +5295,7 @@ const fpCollapseBtn = document.getElementById('fp-collapse-btn');
 const cropBtn = document.getElementById('crop-btn');
 const deleteBtn = document.getElementById('delete-btn');
 const pptxBtn = document.getElementById('pptx-btn');
+const resultsBtn = document.getElementById('results-btn');
 const thumbCanvasEl = document.getElementById('thumb-canvas');
 const thumbCtx = thumbCanvasEl.getContext('2d');
 const thumbViewportEl = document.getElementById('thumb-viewport');
@@ -5043,6 +5386,8 @@ let labelsExplicit = false;
 let capabilities = _contextMenuModel__WEBPACK_IMPORTED_MODULE_6__.NO_HOST_CAPABILITIES;
 // What Del removes here, stated by the host; an init that names none means a row, the shape every mode but the file list has (docs/session-files.md: mode-behaviour-is-a-table).
 let deleteUnit = 'tuple';
+// The Delete button's last applied read-only state, so a per-frame refresh touches the DOM only on a change.
+let deleteGreyed = null;
 // Read-only state snapshot for the Playwright webview testbed (test/webview); inert unless the harness sets __ic_test_enabled — see docs/testing.md.
 if (typeof window !== 'undefined' && window.__ic_test_enabled) {
     window.__ic_test = {
@@ -5178,9 +5523,15 @@ function setupEventListeners() {
     });
     // Delete button
     deleteBtn.addEventListener('click', deleteCurrent);
+    // Votes leave a host that states copyResults by the clipboard; the host serializes them.
+    resultsBtn.addEventListener('click', () => {
+        if (capabilities.copyResults && votingEnabled)
+            vscode.postMessage({ type: 'copyResults' });
+    });
     // PPTX export button
     pptxBtn.addEventListener('click', () => {
-        if (pptxBusy)
+        // A host that cannot hand over a file is never sent an export (docs/crop-and-pptx.md).
+        if (pptxBusy || !capabilities.exportPptx)
             return;
         // Collect tuples that have winners (voted for)
         const tupleIndices = [];
@@ -5208,6 +5559,9 @@ function setupEventListeners() {
 }
 // Delete what Del removes here from disk (no confirmation, per user choice): the row, or the one image on screen.
 function deleteCurrent() {
+    // A target holding a file the host cannot delete is never sent (docs/standalone.md: published-originals-never-written).
+    if (deleteTargetReadOnly())
+        return;
     if (deleteUnit === 'image') {
         vscode.postMessage({
             type: 'deleteImage',
@@ -5221,8 +5575,34 @@ function deleteCurrent() {
 /** The button hint and the help row say what Del will actually take here, so neither can promise the wrong unit. */
 function applyDeleteUnitToAffordances() {
     const what = deleteUnit === 'image' ? 'current image file' : 'current tuple files';
-    deleteBtn.setAttribute('title', `Delete ${what} (Del)`);
     helpDeleteTextEl.textContent = `Delete ${what} (permanent!)`;
+    // Forces the availability pass below to rewrite the button's title for the new unit.
+    deleteGreyed = null;
+    applyDeleteAvailability();
+}
+/** Whether what Del would remove holds a file the host flagged read-only: the image on screen, or any real file of the row. */
+function deleteTargetReadOnly() {
+    const tuple = tuples[currentTupleIndex];
+    if (!tuple)
+        return false;
+    if (deleteUnit === 'image')
+        return tuple.images[toOriginal(currentModalityIndex, modalityOrder)]?.readOnly === true;
+    return tuple.images.some(img => img.name !== '' && img.readOnly === true);
+}
+/** Grey the Delete button while its target is read-only; re-run on navigation and every structural change (docs/standalone.md: published-originals-never-written). */
+function applyDeleteAvailability() {
+    const greyed = deleteTargetReadOnly();
+    if (greyed === deleteGreyed)
+        return;
+    deleteGreyed = greyed;
+    deleteBtn.disabled = greyed;
+    const what = deleteUnit === 'image' ? 'current image file' : 'current tuple files';
+    deleteBtn.setAttribute('title', greyed ? `Read-only here: the ${what} cannot be deleted` : `Delete ${what} (Del)`);
+}
+/** Buttons a host states rather than the webview infers: PPTX where a file can be handed over, results.txt where votes can be copied out. */
+function applyHostAffordances() {
+    pptxBtn.hidden = !capabilities.exportPptx;
+    resultsBtn.hidden = !(capabilities.copyResults && votingEnabled);
 }
 // Crop confirmation callback
 function handleCropConfirm() {
@@ -5388,6 +5768,7 @@ function handleInit(message) {
     modalityOrder = modalities.map((_, i) => asOriginal(i)); // Initialize order: [0, 1, 2, ...]
     // Load winner state
     votingEnabled = message.votingEnabled;
+    applyHostAffordances();
     winners = new Map();
     if (message.winners) {
         for (const [tupleIdx, modalityIdx] of Object.entries(message.winners)) {
@@ -5985,6 +6366,7 @@ function loadTuple(index) {
         panY = 0;
     }
     currentTupleIndex = index;
+    applyDeleteAvailability();
     evictDistantWebviewTuples();
     // Reset to the target tuple's cache so no stale frame from the previous tuple can show.
     const cachedForIndex = loadedTuples.get(index);
@@ -6927,6 +7309,7 @@ function applyEmptyNotice() {
     return true;
 }
 function render() {
+    applyDeleteAvailability();
     // Nothing to draw: a notice, never a spinner over the last frame (docs/loading-architecture.md: empty-comparison-is-terminal).
     if (applyEmptyNotice())
         return;
