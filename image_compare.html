@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ImageCompare 0.6.0</title>
+<title>ImageCompare 0.7.0</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -284,7 +284,7 @@ body {
   min-width: 0;
   /* Capped so #status keeps a readable share: the strip's natural width is unbounded and #status collapses to 0 before it. Fewer pills visible than the old wrap showed, deliberately — the wrap paid for them in viewer height. */
   max-width: 60%;
-  /* The active pill's ring is a 2px OUTER box-shadow and :hover scales 5%, both outside the pill's box, so the strip pads on EVERY side — vertically the overflow crops them, and horizontally the first and last pill's ring falls outside the scroll range at either end. */
+  /* The active pill's ring is a 2px OUTER box-shadow and :hover scales 5%, both outside the pill's box, so the strip pads on EVERY side — vertically the overflow crops them, and horizontally the first and last pill's ring falls outside the scroll range at either end. 5% of a long pill outgrows this padding, so the end pills scale from their outer edge instead, and a sole pill, which has no inner side to grow into, is underlined rather than scaled (below). */
   padding: 4px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -292,6 +292,8 @@ body {
   scrollbar-width: none;
 }
 #modality-selector::-webkit-scrollbar { display: none; }
+/* Every gesture on the row is the row's own, in every layout: a browser pan cannot be handed to a pill lifted mid-gesture (docs/pointer-input.md: row-owns-touch). */
+#modality-selector { touch-action: none; }
 
 #status {
   color: var(--vscode-descriptionForeground, #888);
@@ -332,7 +334,16 @@ body {
   flex-shrink: 0;
   white-space: nowrap;
 }
-.modality-btn:hover { transform: scale(1.05); }
+/* Only a pointer that can hover gets the hover look: a tap on a phone would leave it stuck on. */
+@media (hover: hover) {
+  .modality-btn:hover { transform: scale(1.05); }
+  .modality-btn:first-child { transform-origin: left center; }
+  .modality-btn:last-child { transform-origin: right center; }
+  .modality-btn:only-child:hover { transform: none; text-decoration: underline; }
+}
+/* A lifted pill follows the pointer with no easing; the others slide aside on the base transition. */
+.modality-btn.pill-dragging { transition: none; z-index: 2; cursor: grabbing; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6); }
+#modality-selector.pill-reordering { cursor: grabbing; }
 
 /* Native title= tooltips drop on re-render and never reappear without leaving the pill, so pills use this instead. */
 #pill-tooltip {
@@ -449,7 +460,6 @@ body {
   flex-shrink: 0;
 }
 .reorder-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #555); }
-.reorder-btn:disabled { opacity: 0.3; cursor: default; }
 
 #help-btn {
   background: var(--vscode-button-secondaryBackground, #444);
@@ -558,7 +568,7 @@ body {
 .carousel-row.current { background: rgba(255, 255, 255, 0.1); }
 
 .carousel-thumb {
-  object-fit: contain;
+  object-fit: cover;
   background: #111;
   border-radius: 3px;
   border: 2px solid transparent;
@@ -698,6 +708,28 @@ body {
   color: var(--vscode-descriptionForeground, #888);
 }
 #help-version:empty { display: none; }
+
+/* The touch layout, only under a coarse primary pointer (docs/pointer-input.md: touch-layout-by-primary-pointer): no Tools panel, menus or tooltips, larger targets, the strip on demand. */
+/* The ▦ box exists only with a strip, keyed on the class main.ts sets beside #carousel.active, not on the :has pseudo-class, which Safari < 15.4 and Firefox < 121 lack; hidden, it takes no width and no #info gap. */
+#reorder-buttons, .touch-only { display: none; }
+body.touch-ui #viewer.has-carousel ~ #info #reorder-buttons { display: flex; }
+body.touch-ui .touch-only { display: revert; }
+body.touch-ui #help-modal tr:not(.touch-only), body.touch-ui #help-modal h3:not(.touch-only) { display: none; }
+body.touch-ui #floating-panel, body.touch-ui #carousel-resize, body.touch-ui .winner-circle, body.touch-ui #pill-tooltip { display: none !important; }
+body.touch-ui { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+body.touch-ui .carousel-thumb { -webkit-user-drag: none; }
+body.touch-ui #carousel { background: var(--vscode-editor-background, #1e1e1e); border-right: 0; }
+/* The strip's inner scroller is a scroll container, so it must say none itself: an ancestor's none stops at it, and the browser's pan then cancels the finger. */
+body.touch-ui #viewer, body.touch-ui #carousel, body.touch-ui #carousel-hscroll { touch-action: none; }
+body.touch-ui #info { gap: 8px; padding: 6px 8px; }
+body.touch-ui .reorder-btn, body.touch-ui #help-btn { width: 40px; height: 40px; font-size: 18px; }
+body.touch-ui .modality-btn { padding: 9px 12px; font-size: 14px; }
+body.touch-ui #status-info { padding: 10px 4px; cursor: pointer; }
+#viewer.strip-closed #carousel, #viewer.strip-closed #carousel-resize { display: none !important; }
+@media (orientation: portrait) {
+  body.touch-ui #info { flex-wrap: wrap; }
+  body.touch-ui #modality-selector { order: -1; flex-basis: 100%; max-width: 100%; }
+}
 </style>
 </head>
 <body>
@@ -740,8 +772,7 @@ body {
 
   <div id="info" class="hidden">
     <div id="reorder-buttons">
-      <button id="reorder-left" class="reorder-btn" title="Move modality left ([)">←</button>
-      <button id="reorder-right" class="reorder-btn" title="Move modality right (])">→</button>
+      <button id="strip-btn" class="reorder-btn" title="Show or hide the film strip"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M0 0h4v4H0zM6 0h4v4H6zM12 0h4v4h-4zM0 6h4v4H0zM6 6h4v4H6zM12 6h4v4h-4zM0 12h4v4H0zM6 12h4v4H6zM12 12h4v4h-4z"/></svg></button>
     </div>
     <div id="modality-selector"></div>
     <span id="status"><span id="status-name">Loading...</span></span>
@@ -755,11 +786,21 @@ body {
   <div id="help-modal">
     <div class="modal-content">
       <h3>Keyboard Shortcuts</h3>
+      <h3 class="touch-only">Touch</h3>
       <table>
+        <tr class="touch-only"><td>Swipe ← →</td><td>Switch modality (skips hidden)</td></tr>
+        <tr class="touch-only"><td>Swipe ↑ ↓</td><td>Next/previous tuple</td></tr>
+        <tr class="touch-only"><td>Touch and hold</td><td>Flip to previous modality until you let go</td></tr>
+        <tr class="touch-only"><td>Hold a pill, then drag</td><td>Reorder modalities</td></tr>
+        <tr class="touch-only"><td>Pinch</td><td>Zoom</td></tr>
+        <tr class="touch-only"><td>Two-finger drag</td><td>Pan</td></tr>
+        <tr class="touch-only"><td>▦</td><td>Show or hide the film strip; drag it to scroll, tap a tile to go there</td></tr>
+        <tr class="touch-only"><td>Zoom readout</td><td>Reset zoom</td></tr>
         <tr><td>← →</td><td>Switch modality (skips hidden)</td></tr>
         <tr><td>↑ ↓</td><td>Previous/next tuple</td></tr>
         <tr><td>Space</td><td>Flip to previous modality (hold)</td></tr>
         <tr><td>1-9</td><td>Jump to modality N</td></tr>
+        <tr><td>Drag a pill</td><td>Reorder modalities</td></tr>
         <tr><td>[ ]</td><td>Reorder current modality</td></tr>
         <tr><td>Enter</td><td>Toggle winner / confirm crop (in crop mode)</td></tr>
         <tr><td>Scroll</td><td>Zoom in/out; scroll tuples on the film strip</td></tr>
@@ -3176,6 +3217,7 @@ body {
   var OPENED_FOLDER_CAPABILITIES = { exportPptx: true, copyResults: false };
   var state;
   var webviewReady = false;
+  var viewKey;
   var pool = new WorkPool(poolWidth(navigator.hardwareConcurrency || 4));
   resetDebugClock();
   configureDebugLog({
@@ -3188,8 +3230,20 @@ body {
     postMessage: (m) => {
       void handleWebviewMessage(m);
     },
-    getState: () => void 0,
-    setState: (_s) => void 0
+    // Blocked or failing storage keeps nothing and says nothing (docs/standalone.md, "The view survives a reload").
+    getState: () => {
+      try {
+        return viewKey ? JSON.parse(localStorage.getItem(viewKey) ?? "null") ?? void 0 : void 0;
+      } catch {
+        return void 0;
+      }
+    },
+    setState: (s) => {
+      try {
+        if (viewKey) localStorage.setItem(viewKey, JSON.stringify(s));
+      } catch {
+      }
+    }
   });
   function post(msg) {
     setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: msg })), 0);
@@ -3638,9 +3692,9 @@ body {
       config: { thumbnailSize: THUMBNAIL_SIZE, prefetchCount: PREFETCH_COUNT, keepZoomOnTupleChange: false },
       votingEnabled,
       labelsExplicit: false,
-      version: "0.6.0",
-      // No file tree, no session file, the browser's text clipboard; a published comparison's export/copy flags are its regime row's (docs/standalone.md: affordances-rendered-by-the-webview) (docs/standalone.md: host-regime-is-one-table).
-      capabilities: { revealInExplorer: false, copyTextToClipboard: true, saveSessionAs: false, ...s.published?.capabilities ?? OPENED_FOLDER_CAPABILITIES },
+      version: "0.7.0",
+      // No file tree, no session file, the browser's text clipboard; a published comparison's export/copy flags are its regime row's, and only it keeps a view (docs/standalone.md: affordances-rendered-by-the-webview) (docs/standalone.md: host-regime-is-one-table) (docs/standalone.md: view-kept-only-where-stated).
+      capabilities: { revealInExplorer: false, copyTextToClipboard: true, saveSessionAs: false, ...s.published?.capabilities ?? OPENED_FOLDER_CAPABILITIES, restoresView: !!s.published },
       // What Del removes here, stated rather than inferred by the webview (docs/session-files.md: mode-behaviour-is-a-table).
       deleteUnit: MODES[s.scan.mode].deleteUnit,
       // Whether a slot's file can be deleted is the root's to say; the webview greys Delete on it (docs/standalone.md: published-originals-never-written).
@@ -4035,7 +4089,7 @@ body {
           Scroll: zoom | Drag: pan | Esc: reset
         </p>
         <div id="ic-error"></div>
-        <div class="ic-version">v${"0.6.0"} \u2014 standalone build</div>
+        <div class="ic-version">v${"0.7.0"} \u2014 standalone build</div>
       </div>
     </div>`;
     document.body.appendChild(el);
@@ -4084,7 +4138,7 @@ body {
   }
   buildLanding();
   var seam = {
-    version: "0.6.0",
+    version: "0.7.0",
     // Injectable so tests can shrink the wait; read each time the poll timer is armed.
     pollIntervalMs: 4e3,
     open: (handle) => openRoot(createFsaBackend(handle)),
@@ -4122,6 +4176,7 @@ body {
       const thumbs = loadPackedThumbs(manifest.thumbs, async (path) => (await fetchPublishedResponse(path)).text());
       const listed = createPublishedBackend(manifest.files, fetchPublishedFile);
       const namespace = viewerLayerNamespace(new URL("imagecompare.json", location.href).href);
+      viewKey = `imagecompare-view\0${namespace}`;
       const listedPaths = new Set(manifest.files.map((file) => `${listed.rootPath}/${file}`));
       const root = await createViewerLayer(listed, listedPaths, indexedDbLayerStore(), namespace);
       if (state) return;
@@ -5174,6 +5229,471 @@ function columnLeft(index, pitch, pad) {
 }
 
 
+/***/ }),
+/* 12 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   dropSlot: () => (/* binding */ dropSlot),
+/* harmony export */   movedIndex: () => (/* binding */ movedIndex),
+/* harmony export */   slotShift: () => (/* binding */ slotShift)
+/* harmony export */ });
+/** Pure (no vscode, no DOM): what moving one pill does to every display index, where a lifted pill drops, and how far each other pill slides aside meanwhile (docs/pointer-input.md). */
+/** Where display index `k` lands when the item at `from` moves to `to`: the moved one lands at `to`, the ones between close up by one (docs/pointer-input.md: reorder-is-one-move). */
+function movedIndex(k, from, to) {
+    if (k === from)
+        return to;
+    if (from < k && k <= to)
+        return k - 1;
+    if (to <= k && k < from)
+        return k + 1;
+    return k;
+}
+/** First index in [lo, hi) whose value passes `pred`, for a predicate monotone over ascending `a`. */
+function firstWhere(a, lo, hi, pred) {
+    while (lo < hi) {
+        const m = (lo + hi) >> 1;
+        if (pred(a[m]))
+            hi = m;
+        else
+            lo = m + 1;
+    }
+    return lo;
+}
+/** The slot a pill lifted from `from` belongs in with its centre at `centre`, over every pill's resting midpoint `mids` (ascending); a neighbour is passed only strictly beyond its midpoint. */
+function dropSlot(mids, from, centre) {
+    const passedRight = firstWhere(mids, from + 1, mids.length, (m) => m >= centre) - (from + 1);
+    const passedLeft = from - firstWhere(mids, 0, from, (m) => m > centre);
+    return from + passedRight - passedLeft;
+}
+/** How far pill `j` (not the lifted one) slides while the pill from `from` hovers over slot `to`; `shift` is the lifted pill's width plus one gap. */
+function slotShift(j, from, to, shift) {
+    if (j > from && j <= to)
+        return -shift;
+    if (j < from && j >= to)
+        return shift;
+    return 0;
+}
+
+
+/***/ }),
+/* 13 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   installPillDrag: () => (/* binding */ installPillDrag)
+/* harmony export */ });
+/* harmony import */ var _pillReorder__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(12);
+
+const MOUSE_START_PX = 5;
+const HOLD_MS = 300;
+const SLOP_PX = 8;
+const EDGE_PX = 40;
+const EDGE_SPEED = 0.4; // px of auto-scroll per frame for every px the pointer is into the edge band
+const FLING_DECAY = 0.995; // per ms
+const LIFT_SCALE = 1.08;
+const LIFT = `scale(${LIFT_SCALE})`;
+/** A pill's untransformed left and width, from its drawn rect and its current, possibly mid-transition, scale-and-translate about its origin. */
+function restingSpan(el) {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    if (cs.transform === 'none')
+        return { left: r.left, width: r.width };
+    const m = new DOMMatrixReadOnly(cs.transform);
+    const ox = parseFloat(cs.transformOrigin);
+    return { left: r.left - m.e - ox * (1 - m.a), width: r.width / m.a };
+}
+/** Installs the row's pointer gestures; the row is rebuilt only by `onDrop`, never here. */
+function installPillDrag(rowEl, actions) {
+    let press = null;
+    let drag = null;
+    let swallowClick = false;
+    let fling = 0;
+    const stopFling = () => { if (fling)
+        cancelAnimationFrame(fling); fling = 0; };
+    const startFling = (v) => {
+        let last = performance.now();
+        const step = (now) => {
+            const dt = now - last;
+            last = now;
+            rowEl.scrollLeft -= v * dt;
+            v *= Math.pow(FLING_DECAY, dt);
+            fling = Math.abs(v) > 0.02 ? requestAnimationFrame(step) : 0;
+        };
+        if (Math.abs(v) > 0.1)
+            fling = requestAnimationFrame(step);
+    };
+    const lifted = (d, raw) => `translateX(${Math.max(d.minDx, Math.min(d.maxDx, raw))}px) ${LIFT}`;
+    const begin = (p, pill, clientX) => {
+        const pills = Array.from(rowEl.querySelectorAll('.modality-btn'));
+        const from = pills.indexOf(pill);
+        if (from < 0 || pills.length < 2) {
+            press = null;
+            return;
+        }
+        // Rects, not offsets, which round to whole px while pills sit at fractional ones; a hover or glide transform is undone in arithmetic, so a glide keeps running.
+        const boxes = pills.map(restingSpan);
+        const lefts = boxes.map((b) => b.left);
+        const widths = boxes.map((b) => b.width);
+        const gap = from + 1 < pills.length ? lefts[from + 1] - lefts[from] - widths[from] : lefts[from] - lefts[from - 1] - widths[from - 1];
+        const rect = rowEl.getBoundingClientRect();
+        const last = pills.length - 1;
+        // The lift scales about the centre whatever origin a resting end pill has, so the clamp insets by the growth on each side.
+        const grow = (LIFT_SCALE - 1) / 2 * widths[from];
+        const lo = lefts[0] - lefts[from] + grow;
+        const hi = lefts[last] + widths[last] - lefts[from] - widths[from] - grow;
+        drag = {
+            id: p.id, touch: p.touch, pill, pills, from, to: from,
+            mids: lefts.map((l, j) => l + widths[j] / 2),
+            shift: widths[from] + gap,
+            minDx: Math.min(lo, (lo + hi) / 2),
+            maxDx: Math.max(hi, (lo + hi) / 2),
+            rowLeft: rect.left, rowRight: rect.right,
+            startX: clientX - rect.left + rowEl.scrollLeft, clientX, raf: 0,
+        };
+        press = null;
+        actions.onStart();
+        rowEl.classList.add('pill-reordering');
+        pill.classList.add('pill-dragging');
+        pill.style.transformOrigin = 'center';
+        pill.style.transform = lifted(drag, 0);
+        try {
+            rowEl.setPointerCapture(p.id);
+        }
+        catch { /* the pointer may already be gone */ }
+        if (p.touch)
+            navigator.vibrate?.(10);
+    };
+    // Transforms only, and only on pills that change side: nothing is rebuilt until the drop (docs/pointer-input.md: drag-commits-once).
+    const update = () => {
+        const d = drag;
+        if (!d)
+            return;
+        const raw = d.clientX - d.rowLeft + rowEl.scrollLeft - d.startX;
+        d.pill.style.transform = lifted(d, raw);
+        // The slot follows the pointer, not the clamped drawing: a pill as wide as an end pill could never pass that pill's midpoint.
+        const to = (0,_pillReorder__WEBPACK_IMPORTED_MODULE_0__.dropSlot)(d.mids, d.from, d.mids[d.from] + raw);
+        if (to !== d.to) {
+            for (let j = Math.min(to, d.to); j <= Math.max(to, d.to); j++) {
+                if (j === d.from)
+                    continue;
+                const s = (0,_pillReorder__WEBPACK_IMPORTED_MODULE_0__.slotShift)(j, d.from, to, d.shift);
+                if (s !== (0,_pillReorder__WEBPACK_IMPORTED_MODULE_0__.slotShift)(j, d.from, d.to, d.shift))
+                    d.pills[j].style.transform = s ? `translateX(${s}px)` : '';
+            }
+            d.to = to;
+        }
+        const into = d.clientX < d.rowLeft + EDGE_PX ? d.clientX - d.rowLeft - EDGE_PX : d.clientX > d.rowRight - EDGE_PX ? d.clientX - d.rowRight + EDGE_PX : 0;
+        if (into !== 0 && d.raf === 0) {
+            d.raf = requestAnimationFrame(() => {
+                d.raf = 0;
+                if (drag !== d)
+                    return;
+                rowEl.scrollLeft += into * EDGE_SPEED;
+                update();
+            });
+        }
+    };
+    // The one commit of a drag: transforms cleared, then a single onDrop (docs/pointer-input.md: drag-commits-once).
+    const finish = (commit) => {
+        const d = drag;
+        drag = null;
+        if (!d)
+            return;
+        if (d.raf)
+            cancelAnimationFrame(d.raf);
+        // A cancelled touchstart sends no click, so only a mouse or pen release may have one to swallow (docs/pointer-input.md: drag-is-not-a-click).
+        if (!d.touch)
+            swallowClick = true;
+        const drawnAt = d.pill.getBoundingClientRect().left;
+        for (const el of d.pills) {
+            el.style.transition = 'none';
+            el.style.transform = '';
+        }
+        d.pill.style.transformOrigin = '';
+        d.pill.classList.remove('pill-dragging');
+        rowEl.classList.remove('pill-reordering');
+        if (commit && d.to !== d.from)
+            actions.onDrop(d.from, d.to);
+        // The row may have been rebuilt; the pill now at the target glides there from where it was let go.
+        const landed = rowEl.querySelectorAll('.modality-btn')[commit ? d.to : d.from];
+        if (landed) {
+            landed.style.transition = 'none';
+            landed.style.transform = `translateX(${drawnAt - landed.getBoundingClientRect().left}px)`;
+            void landed.offsetWidth;
+        }
+        for (const el of Array.from(rowEl.querySelectorAll('.modality-btn'))) {
+            el.style.transition = '';
+            el.style.transform = '';
+        }
+    };
+    rowEl.addEventListener('pointerdown', (e) => {
+        if (drag || e.button !== 0)
+            return;
+        stopFling();
+        const pill = e.target.closest?.('.modality-btn');
+        const touch = e.pointerType === 'touch';
+        if (!pill && !touch)
+            return;
+        const p = { id: e.pointerId, pill, x0: e.clientX, y0: e.clientY, touch, pen: e.pointerType === 'pen', timer: 0, panning: false, lastX: e.clientX, lastT: e.timeStamp, v: 0 };
+        if (touch && pill)
+            p.timer = window.setTimeout(() => { if (press === p)
+                begin(p, pill, p.x0); }, HOLD_MS);
+        press = p;
+    });
+    rowEl.addEventListener('pointermove', (e) => {
+        if (drag && e.pointerId === drag.id) {
+            drag.clientX = e.clientX;
+            update();
+            return;
+        }
+        const p = press;
+        if (!p || e.pointerId !== p.id)
+            return;
+        const moved = Math.hypot(e.clientX - p.x0, e.clientY - p.y0);
+        if (p.touch) {
+            if (!p.panning && moved > SLOP_PX) {
+                clearTimeout(p.timer);
+                p.panning = true;
+            }
+            if (p.panning) {
+                const dx = e.clientX - p.lastX;
+                const dt = e.timeStamp - p.lastT;
+                rowEl.scrollLeft -= dx;
+                if (dt > 0)
+                    p.v = 0.7 * p.v + 0.3 * (dx / dt);
+                p.lastX = e.clientX;
+                p.lastT = e.timeStamp;
+            }
+        }
+        else if (p.pill && moved > MOUSE_START_PX) {
+            begin(p, p.pill, p.x0);
+            if (drag) {
+                drag.clientX = e.clientX;
+                update();
+            }
+        }
+    });
+    // A drag or a pan ends here; only an untouched tap clicks, and for a finger or a pen the row clicks it itself (docs/pointer-input.md: drag-is-not-a-click, row-owns-touch).
+    const release = (e, commit) => {
+        const p = press;
+        if (p && e.pointerId === p.id) {
+            clearTimeout(p.timer);
+            press = null;
+            if (p.panning) {
+                // A finger that stopped before lifting throws nothing.
+                if (commit && e.timeStamp - p.lastT < 80)
+                    startFling(p.v);
+            }
+            else if ((p.touch || p.pen) && commit && p.pill) {
+                p.pill.click();
+                // A pen's engine may click too, or may not (a stylus that also fires the cancelled touchstart); the row's click is the one.
+                if (p.pen)
+                    swallowClick = true;
+            }
+        }
+        if (drag && e.pointerId === drag.id)
+            finish(commit);
+    };
+    rowEl.addEventListener('pointerup', (e) => release(e, true));
+    rowEl.addEventListener('pointercancel', (e) => release(e, false));
+    // A pill's own capture loss (a touch's implicit capture handed to the row) bubbles here too and is not a release (docs/pointer-input.md: only-row-capture-ends-drag).
+    rowEl.addEventListener('lostpointercapture', (e) => { if (e.target === rowEl)
+        release(e, true); });
+    // Chrome's long press and pan grow from an uncancelled touchstart; every gesture on the row is ours (docs/pointer-input.md: row-owns-touch).
+    rowEl.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+    // The swallow eats only the click of the release that armed it: a new press disarms it, and a click no pointer made (detail 0) passes (docs/pointer-input.md: drag-is-not-a-click).
+    window.addEventListener('pointerdown', () => { swallowClick = false; }, true);
+    window.addEventListener('click', (e) => {
+        if (swallowClick && e.detail > 0) {
+            e.preventDefault();
+            e.stopPropagation();
+            swallowClick = false;
+        }
+    }, true);
+}
+
+
+/***/ }),
+/* 14 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   installTouchInput: () => (/* binding */ installTouchInput)
+/* harmony export */ });
+/** The touch layout's gestures on the image and the strip, plus its menu suppression; every gesture calls an action its key also calls (docs/pointer-input.md). */
+const SWIPE_PX = 40;
+const SLOP_PX = 10;
+const HOLD_MS = 350;
+/** Installs the image's and the strip's finger gestures and the touch layout's no-menu rule. */
+function installTouchInput(viewerEl, stripEl, actions) {
+    const points = new Map();
+    let g = null;
+    const two = () => {
+        const [a, b] = [...points.values()];
+        return { d: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    };
+    viewerEl.addEventListener('pointerdown', (e) => {
+        if (e.pointerType !== 'touch')
+            return;
+        if (e.target.closest('#carousel, #floating-panel'))
+            return;
+        // No compatibility mouse events: the mouse pan and crop handlers must never see a finger.
+        e.preventDefault();
+        try {
+            viewerEl.setPointerCapture(e.pointerId);
+        }
+        catch { /* the pointer may already be gone */ }
+        points.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (points.size === 1) {
+            const timer = window.setTimeout(() => {
+                if (g?.kind === 'one' && !g.done) {
+                    g = { kind: 'hold' };
+                    actions.flipStart();
+                }
+            }, HOLD_MS);
+            g = { kind: 'one', x0: e.clientX, y0: e.clientY, timer, done: false };
+        }
+        else if (points.size === 2) {
+            if (g?.kind === 'one')
+                clearTimeout(g.timer);
+            if (g?.kind === 'hold')
+                actions.flipEnd();
+            const p = two();
+            g = { kind: 'pinch', d0: p.d };
+            actions.pinchStart(p.x, p.y);
+        }
+    });
+    viewerEl.addEventListener('pointermove', (e) => {
+        const pt = points.get(e.pointerId);
+        if (!pt || !g)
+            return;
+        pt.x = e.clientX;
+        pt.y = e.clientY;
+        if (g.kind === 'pinch') {
+            if (points.size < 2)
+                return;
+            const p = two();
+            actions.pinchMove(p.d / g.d0, p.x, p.y);
+            return;
+        }
+        if (g.kind !== 'one' || g.done)
+            return;
+        const dx = e.clientX - g.x0, dy = e.clientY - g.y0;
+        if (Math.hypot(dx, dy) > SLOP_PX)
+            clearTimeout(g.timer);
+        // One step per swipe, taken as the finger crosses the threshold rather than on lift.
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_PX)
+            return;
+        g.done = true;
+        if (Math.abs(dx) > Math.abs(dy))
+            actions.stepModality(dx < 0 ? 1 : -1);
+        else
+            actions.stepTuple(dy < 0 ? 1 : -1);
+    });
+    const release = (e) => {
+        if (!points.delete(e.pointerId) || !g)
+            return;
+        if (g.kind === 'one')
+            clearTimeout(g.timer);
+        if (g.kind === 'hold')
+            actions.flipEnd();
+        // Lifting one finger of a pinch must not turn the other into a swipe.
+        g = points.size === 0 ? null : { kind: 'spent' };
+    };
+    viewerEl.addEventListener('pointerup', release);
+    viewerEl.addEventListener('pointercancel', release);
+    // Android opens a menu on any long press, and here a long press flips or lifts a pill: no menu, anywhere (docs/pointer-input.md: touch-opens-no-menu).
+    window.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+    }, true);
+    // The strip is a virtual wall with no native scroll on its row axis, so a finger drives the same offsets the wheel does.
+    let drag = null;
+    stripEl.addEventListener('pointerdown', (e) => {
+        if (e.pointerType !== 'touch')
+            return;
+        drag = { x: e.clientX, y: e.clientY, moved: false };
+    });
+    stripEl.addEventListener('pointermove', (e) => {
+        if (!drag || e.pointerType !== 'touch')
+            return;
+        const dx = drag.x - e.clientX, dy = drag.y - e.clientY;
+        if (!drag.moved && Math.hypot(dx, dy) < SLOP_PX)
+            return;
+        drag.moved = true;
+        drag.x = e.clientX;
+        drag.y = e.clientY;
+        actions.scrollStrip(dx, dy);
+    });
+    const endDrag = () => { if (drag && !drag.moved)
+        drag = null; };
+    stripEl.addEventListener('pointerup', endDrag);
+    stripEl.addEventListener('pointercancel', () => { drag = null; });
+    // A drag that scrolled the strip is not a tap on the tile it ended on.
+    stripEl.addEventListener('click', (e) => {
+        if (drag?.moved) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        drag = null;
+    }, true);
+}
+
+
+/***/ }),
+/* 15 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   buildSavedView: () => (/* binding */ buildSavedView),
+/* harmony export */   planRestore: () => (/* binding */ planRestore)
+/* harmony export */ });
+/** Pure (no vscode, no DOM): a published page's saved view, built from the current state and planned back by name (docs/standalone.md, "The view survives a reload"). */
+/** The view as it stands: `displayNames[d]` is the modality at display position `d`. */
+function buildSavedView(displayNames, hiddenByDisplay, tuple, displayIndex, zoom, panX, panY) {
+    return {
+        order: displayNames.slice(),
+        hidden: displayNames.filter((_, d) => hiddenByDisplay[d]),
+        tuple,
+        modality: displayNames[displayIndex] ?? null,
+        zoom,
+        panX,
+        panY,
+    };
+}
+/** Plans a restore of `saved` (any value; never throws) onto `modalityNames` in original order and `tupleNames`; whatever does not match stays at its default (docs/standalone.md: view-restored-by-name). */
+function planRestore(saved, modalityNames, tupleNames) {
+    const v = saved !== null && typeof saved === 'object' ? saved : {};
+    const known = (list) => {
+        const names = Array.isArray(list) ? list.filter((n) => typeof n === 'string') : [];
+        return [...new Set(names.map(n => modalityNames.indexOf(n)).filter(i => i >= 0))];
+    };
+    const finite = (x, fallback) => typeof x === 'number' && Number.isFinite(x) ? x : fallback;
+    const order = known(v.order);
+    // A modality the save never saw keeps its default relative place, after the saved ones.
+    modalityNames.forEach((_, i) => { if (!order.includes(i))
+        order.push(i); });
+    const hidden = known(v.hidden);
+    const tuple = typeof v.tuple === 'string' ? tupleNames.indexOf(v.tuple) : -1;
+    const modality = typeof v.modality === 'string' ? modalityNames.indexOf(v.modality) : -1;
+    return {
+        order,
+        hidden,
+        tuple: Math.max(0, tuple),
+        modality: modality >= 0 ? modality : order.find(o => !hidden.includes(o)) ?? order[0] ?? 0,
+        // The viewer's own zoom range.
+        zoom: Math.max(0.1, Math.min(50, finite(v.zoom, 1))),
+        panX: finite(v.panX, 0),
+        panY: finite(v.panY, 0),
+    };
+}
+
+
 /***/ })
 /******/ 	]);
 /************************************************************************/
@@ -5246,10 +5766,18 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _noticeChannel__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(9);
 /* harmony import */ var _axisScroll__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(10);
 /* harmony import */ var _columnWindow__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(11);
+/* harmony import */ var _pillReorder__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(12);
+/* harmony import */ var _pillDrag__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(13);
+/* harmony import */ var _touchInput__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(14);
+/* harmony import */ var _viewState__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(15);
 /**
  * WebView main script for ImageCompare
  * Handles all UI rendering and user interactions
  */
+
+
+
+
 
 
 
@@ -5311,8 +5839,7 @@ const helpContextMenuItemsEl = document.getElementById('help-contextmenu-items')
 const helpRowSaveSessionEl = document.getElementById('help-row-savesession');
 const helpDeleteTextEl = document.getElementById('help-delete-text');
 const closeHelpBtn = document.getElementById('close-help-btn');
-const reorderLeftBtn = document.getElementById('reorder-left');
-const reorderRightBtn = document.getElementById('reorder-right');
+const stripBtn = document.getElementById('strip-btn');
 const imageLoaderEl = document.getElementById('image-loader');
 const emptyNoticeEl = document.getElementById('empty-notice');
 const emptyNoticeTitleEl = document.getElementById('empty-notice-title');
@@ -5360,6 +5887,13 @@ let dragStartY = 0;
 let spaceDown = false;
 let CAROUSEL_WIDTH = 220;
 let CAROUSEL_THUMB_SIZE = 50;
+// Decided once, from the primary pointer and nothing else (docs/pointer-input.md: touch-layout-by-primary-pointer).
+const touchUi = window.matchMedia('(pointer: coarse)').matches;
+let stripClosed = touchUi;
+/** Where the image area starts: the strip's width beside it, or 0 in the touch layout, whose strip covers the image (docs/pointer-input.md: strip-offset-from-one-helper). */
+function carouselOffsetPx() {
+    return isMultiTupleMode && !touchUi ? CAROUSEL_WIDTH : 0;
+}
 let isMultiTupleMode = false;
 let modalityOrder = []; // maps display position -> original modality index
 let loadDebounceTimer = null; // debounce timer for loading full images
@@ -5388,6 +5922,9 @@ let capabilities = _contextMenuModel__WEBPACK_IMPORTED_MODULE_6__.NO_HOST_CAPABI
 let deleteUnit = 'tuple';
 // The Delete button's last applied read-only state, so a per-frame refresh touches the DOM only on a change.
 let deleteGreyed = null;
+// The saved view is read once, at the first init, and written only after that read.
+let viewRestorePending = true;
+let viewSaveTimer = null;
 // Read-only state snapshot for the Playwright webview testbed (test/webview); inert unless the harness sets __ic_test_enabled — see docs/testing.md.
 if (typeof window !== 'undefined' && window.__ic_test_enabled) {
     window.__ic_test = {
@@ -5443,12 +5980,24 @@ function setupEventListeners() {
     // Help modal
     helpBtn.addEventListener('click', () => helpModalEl.classList.add('active'));
     closeHelpBtn.addEventListener('click', () => helpModalEl.classList.remove('active'));
-    // Reorder buttons
-    reorderLeftBtn.addEventListener('click', () => moveCurrentModality(-1));
-    reorderRightBtn.addEventListener('click', () => moveCurrentModality(1));
+    (0,_pillDrag__WEBPACK_IMPORTED_MODULE_12__.installPillDrag)(modalitySelectorEl, {
+        onStart: hidePillTooltip,
+        // One moveModality, one rebuild; the row stays where the user left it (docs/pointer-input.md: drag-commits-once).
+        onDrop: (from, to) => {
+            const scrolled = modalitySelectorEl.scrollLeft;
+            moveModality(from, to);
+            modalitySelectorEl.scrollLeft = scrolled;
+            scrollCarouselToCurrentColumn();
+        },
+    });
+    // A discarded page gets no unload event, so a hide is the last chance to write (docs/standalone.md, "The view survives a reload").
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden')
+        saveView(); });
     // Keyboard
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('keyup', handleKeyUp);
+    if (touchUi)
+        setupTouch();
     // Mouse wheel zoom
     viewerEl.addEventListener('wheel', handleWheel, { passive: false });
     // Mouse drag pan
@@ -5626,7 +6175,7 @@ function getCurrentViewport() {
     // The missing sentinel is truthy but has no dims, and undefined dims make every mapped rect NaN.
     if (!currentImage || currentImage.missing)
         return undefined;
-    const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+    const carouselOffset = carouselOffsetPx();
     return {
         viewerEl,
         zoom,
@@ -5815,6 +6364,8 @@ function handleInit(message) {
     if (isMultiTupleMode) {
         buildCarousel();
     }
+    if (touchUi && !stripClosed)
+        fitStripToViewer();
     // Pills are created here once; loadTuple only updates them (rebuild per keystroke stalled the carousel).
     buildModalitySelector();
     // Request first tuple's images
@@ -5827,6 +6378,50 @@ function handleInit(message) {
     if (isMultiTupleMode) {
         progressContainerEl.classList.add('active');
     }
+    restoreView();
+}
+/** Applies the saved view once per page load through the actions keys and drags take (docs/standalone.md: view-restore-is-navigation). */
+function restoreView() {
+    if (!viewRestorePending)
+        return;
+    viewRestorePending = false;
+    // Without the host's word the webview never touches its state (docs/standalone.md: view-kept-only-where-stated).
+    if (!capabilities.restoresView || !tuples.length || !modalities.length)
+        return;
+    const saved = vscode.getState();
+    if (saved === undefined || saved === null)
+        return;
+    // Names in, indices out: nothing below sees the saved view itself (docs/standalone.md: view-restored-by-name).
+    const plan = (0,_viewState__WEBPACK_IMPORTED_MODULE_14__.planRestore)(saved, modalities, tuples.map(t => t.name));
+    // Each slot through moveModality's remap, the row and the strip rebuilt once for the whole order.
+    if (plan.order.map((o, d) => moveModality(modalityOrder.indexOf(asOriginal(o)), d, false)).some(Boolean))
+        rebuildAfterMove();
+    for (const o of plan.hidden)
+        runMenuAction('toggleHidden', { section: 'pill', tupleIndex: currentTupleIndex, modalityIndex: o });
+    const display = toDisplay(asOriginal(plan.modality), modalityOrder);
+    if (plan.tuple !== currentTupleIndex || display !== currentModalityIndex)
+        goToTupleAndModality(asTuple(plan.tuple), display);
+    zoom = plan.zoom;
+    panX = plan.panX;
+    panY = plan.panY;
+    render();
+}
+/** Writes the view now, by name; the host's storage is the host's to guard (docs/standalone.md: view-restored-by-name). */
+function saveView() {
+    if (viewSaveTimer !== null)
+        clearTimeout(viewSaveTimer);
+    viewSaveTimer = null;
+    // No write without the host's word, nor before the one read (docs/standalone.md: view-kept-only-where-stated).
+    if (!capabilities.restoresView || viewRestorePending)
+        return;
+    vscode.setState((0,_viewState__WEBPACK_IMPORTED_MODULE_14__.buildSavedView)(modalities, hiddenByDisplay(), tuples[currentTupleIndex]?.name ?? null, currentModalityIndex, zoom, panX, panY));
+}
+/** Coalesces a burst of view changes (a pan, a drag) into one write within 250 ms of the first. */
+function scheduleViewSave() {
+    // No timer at all where the host keeps no view (docs/standalone.md: view-kept-only-where-stated).
+    if (!capabilities.restoresView || viewSaveTimer !== null)
+        return;
+    viewSaveTimer = window.setTimeout(saveView, 250);
 }
 function handleThumbnail(message) {
     const key = `${message.tupleIndex}-${message.modalityIndex}`;
@@ -5964,7 +6559,7 @@ function handleImageError(message) {
 }
 function showMissingPlaceholder() {
     // Clear canvas and show missing message
-    const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+    const carouselOffset = carouselOffsetPx();
     canvasEl.width = 400;
     canvasEl.height = 200;
     ctx.fillStyle = '#333';
@@ -6483,7 +7078,7 @@ function showPreviewOrLoading(tupleIndex, displayModalityIndex) {
             // Deferred: only show if we're still on the same tuple/modality.
             if (currentTupleIndex === tupleIndex && currentModalityIndex === displayModalityIndex) {
                 canvasEl.classList.add('preview');
-                const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+                const carouselOffset = carouselOffsetPx();
                 const vw = viewerEl.clientWidth - carouselOffset;
                 const vh = viewerEl.clientHeight;
                 canvasEl.width = previewImg.width;
@@ -6505,7 +7100,7 @@ function showPreviewOrLoading(tupleIndex, displayModalityIndex) {
     }
     else {
         // No thumbnail yet — a drawn placeholder beats a blank white canvas.
-        const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+        const carouselOffset = carouselOffsetPx();
         canvasEl.width = 400;
         canvasEl.height = 200;
         ctx.fillStyle = '#333';
@@ -6531,6 +7126,8 @@ const CAROUSEL_ROW_PAD = 6;
 const CAROUSEL_TILE_GAP = 2;
 // The tile-size floor, derived from the one pitch both pools are sized by so the three can never drift apart.
 const MIN_TILE_PX = _columnWindow__WEBPACK_IMPORTED_MODULE_10__.MIN_TILE_PITCH - CAROUSEL_TILE_GAP;
+// A finger-sized floor for the touch layout's strip; more columns than fit at it scroll sideways.
+const TOUCH_MIN_TILE_PX = 56;
 /** Carousel width that fits every modality column at perTile px (6px row padding each side, scrollbar gutter, 2px gaps). */
 function carouselFitWidth(perTile) {
     return 2 * CAROUSEL_ROW_PAD + SCROLLBAR_GUTTER + modalities.length * perTile + (modalities.length - 1) * CAROUSEL_TILE_GAP;
@@ -6541,11 +7138,12 @@ function updateCarouselThumbSize(snapToDevicePixels = true) {
     // Fractional, not floored: integer steps made every tile snap visibly during a resize drag.
     CAROUSEL_THUMB_SIZE = availableWidth / numModalities;
     // Tiles scale down to fit the width — a floor here reintroduces clipped columns.
-    CAROUSEL_THUMB_SIZE = Math.max(MIN_TILE_PX, CAROUSEL_THUMB_SIZE);
+    const minTile = touchUi ? TOUCH_MIN_TILE_PX : MIN_TILE_PX;
+    CAROUSEL_THUMB_SIZE = Math.max(minTile, CAROUSEL_THUMB_SIZE);
     // At rest, land on the device-pixel grid: fractional row heights make edges shimmer while the wall scrolls.
     if (snapToDevicePixels) {
         const dpr = window.devicePixelRatio || 1;
-        CAROUSEL_THUMB_SIZE = Math.max(MIN_TILE_PX, Math.round(CAROUSEL_THUMB_SIZE * dpr) / dpr);
+        CAROUSEL_THUMB_SIZE = Math.max(minTile, Math.round(CAROUSEL_THUMB_SIZE * dpr) / dpr);
     }
     carouselEl.style.setProperty('--thumb-size', CAROUSEL_THUMB_SIZE + 'px');
     // The pitch just moved, so every materialized column sits at the wrong left until it is rewritten — and the strip may have widened, which the ring must absorb before anything binds against it.
@@ -6575,7 +7173,7 @@ function buildCarousel() {
     carouselResizeEl.classList.add('active');
     carouselResizeEl.style.left = (CAROUSEL_WIDTH - 4) + 'px';
     viewerEl.classList.add('has-carousel');
-    viewerEl.style.setProperty('--carousel-offset', CAROUSEL_WIDTH + 'px');
+    viewerEl.style.setProperty('--carousel-offset', carouselOffsetPx() + 'px');
     carouselColPool = (0,_columnWindow__WEBPACK_IMPORTED_MODULE_10__.columnPoolSize)(CAROUSEL_WIDTH, modalityOrder.length);
     // Virtual shell: an arithmetically sized wall plus the custom scrollbar; rows materialize in ensureVisibleCarouselRows.
     carouselWallEl = document.createElement('div');
@@ -7168,6 +7766,7 @@ function contextTargetFor(target) {
     }
     return null;
 }
+// The touch layout's window-capture listener stops every contextmenu before this one sees it (docs/pointer-input.md: touch-opens-no-menu).
 document.addEventListener('contextmenu', (e) => {
     const target = contextTargetFor(e.target);
     if (!target)
@@ -7196,6 +7795,8 @@ function runMenuAction(action, target) {
     }
 }
 function updateModalitySelector() {
+    // Every view change repaints the pills — order, hide, tuple, modality, and render() on zoom and pan.
+    scheduleViewSave();
     // Calculate win counts per modality (by display index)
     const winCounts = new Array(modalities.length).fill(0);
     if (votingEnabled) {
@@ -7225,65 +7826,47 @@ function updateModalitySelector() {
         if (btn.textContent !== label)
             btn.textContent = label;
     });
-    if (currentModalityIndex <= 0) {
-        reorderLeftBtn.disabled = true;
-    }
-    else {
-        reorderLeftBtn.disabled = false;
-    }
-    if (currentModalityIndex >= modalities.length - 1) {
-        reorderRightBtn.disabled = true;
-    }
-    else {
-        reorderRightBtn.disabled = false;
-    }
 }
 function moveCurrentModality(direction) {
-    if (modalities.length < 2)
-        return;
-    const currentPos = currentModalityIndex;
-    const newPos = asDisplay(currentPos + direction);
-    if (newPos < 0 || newPos >= modalities.length)
-        return;
-    // Swap in modalities
-    [modalities[currentPos], modalities[newPos]] = [modalities[newPos], modalities[currentPos]];
-    // Swap in colors
-    [modalityColors[currentPos], modalityColors[newPos]] = [modalityColors[newPos], modalityColors[currentPos]];
-    // Swap in paths so the pill tooltip stays attached to its modality
-    [modalityPaths[currentPos], modalityPaths[newPos]] = [modalityPaths[newPos], modalityPaths[currentPos]];
-    // Swap in modalityOrder (tracks original index at each display position)
-    [modalityOrder[currentPos], modalityOrder[newPos]] = [modalityOrder[newPos], modalityOrder[currentPos]];
-    // Update winners to reflect swapped indices
+    if (moveModality(currentModalityIndex, currentModalityIndex + direction))
+        centreOnCurrentModality();
+}
+/** Move the modality at display `currentPos` to `newPos`, the ones between closing up; `[`/`]` and a pill drop both land here (docs/pointer-input.md: reorder-is-one-move). */
+function moveModality(currentPos, newPos, rebuild = true) {
+    if (newPos < 0 || newPos >= modalities.length || newPos === currentPos)
+        return false;
+    const move = (a) => { a.splice(newPos, 0, a.splice(currentPos, 1)[0]); };
+    const remap = (k) => asDisplay((0,_pillReorder__WEBPACK_IMPORTED_MODULE_11__.movedIndex)(k, currentPos, newPos));
+    move(modalities);
+    move(modalityColors);
+    // Move in paths so the pill tooltip stays attached to its modality
+    move(modalityPaths);
+    // Move in modalityOrder (tracks original index at each display position)
+    move(modalityOrder);
     if (votingEnabled) {
         const newWinners = new Map();
         for (const [tupleIndex, winnerIdx] of winners) {
-            if (winnerIdx === currentPos) {
-                newWinners.set(tupleIndex, newPos);
-            }
-            else if (winnerIdx === newPos) {
-                newWinners.set(tupleIndex, currentPos);
-            }
-            else {
-                newWinners.set(tupleIndex, winnerIdx);
-            }
+            newWinners.set(tupleIndex, remap(winnerIdx));
         }
         winners = newWinners;
     }
-    // Keep the Space-peek target attached to its modality across the swap.
-    if (previousModalityIndex === currentPos)
-        previousModalityIndex = newPos;
-    else if (previousModalityIndex === newPos)
-        previousModalityIndex = currentPos;
+    // Keep the Space-peek target attached to its modality across the move.
+    previousModalityIndex = remap(previousModalityIndex);
     // Update current index
-    currentModalityIndex = newPos;
+    currentModalityIndex = remap(currentModalityIndex);
     // render() re-derives `images` from the cache using the new modalityOrder.
+    if (rebuild)
+        rebuildAfterMove();
+    return true;
+}
+/** Rebuilds the pill row and the strip after one move or a batch of them. */
+function rebuildAfterMove() {
     // Rebuild UI
     buildModalitySelector();
     if (isMultiTupleMode) {
         buildCarousel();
     }
     render();
-    centreOnCurrentModality();
     // A reorder moves no column but re-permutes the strip the aim ranks over (docs/loading-architecture.md: picked-column-reports-itself).
     columnReport.keyed(currentModalityIndex);
 }
@@ -7349,7 +7932,7 @@ function render() {
     // Update status
     updateStatus(`${name} (${width}×${height})`, `Zoom: ${zoom.toFixed(1)}x`, currentTupleIndex);
     // Calculate display size
-    const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+    const carouselOffset = carouselOffsetPx();
     const vw = viewerEl.clientWidth - carouselOffset;
     const vh = viewerEl.clientHeight;
     const baseScale = Math.min(vw / width, vh / height);
@@ -7398,13 +7981,111 @@ function renderThumbnail(img, imgW, imgH, viewerW, viewerH, baseScale) {
     }
     // Update crop overlay position if active
     if (_crop__WEBPACK_IMPORTED_MODULE_0__.cropMode) {
-        const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+        const carouselOffset = carouselOffsetPx();
         _crop__WEBPACK_IMPORTED_MODULE_0__.renderCropOverlay({
             viewerEl, zoom, panX, panY, imgW, imgH, carouselOffset
         });
     }
 }
 // Event handlers
+/** ←/→ and a sideways swipe. Cycling skips hidden pills; click and digit jump still reach them (docs/session-files.md: hidden-is-presentation-only). */
+function stepModality(dir) {
+    const target = (0,_modalityVisibility__WEBPACK_IMPORTED_MODULE_1__.nextVisibleModality)(currentModalityIndex, dir, hiddenByDisplay());
+    if (target !== currentModalityIndex) {
+        previousModalityIndex = currentModalityIndex;
+        currentModalityIndex = asDisplay(target);
+        render();
+        centreOnCurrentModality();
+        columnReport.keyed(currentModalityIndex);
+    }
+}
+function toggleStrip() {
+    stripClosed = !stripClosed;
+    viewerEl.classList.toggle('strip-closed', stripClosed);
+    if (!stripClosed)
+        fitStripToViewer();
+}
+/** The touch layout's strip spans the viewer; its tiles and columns rebind to that width. */
+function fitStripToViewer() {
+    CAROUSEL_WIDTH = viewerEl.clientWidth;
+    carouselEl.style.width = CAROUSEL_WIDTH + 'px';
+    // A hidden strip measured 0 wide, so its columns rebind once it has a width again.
+    requestAnimationFrame(() => { updateCarouselThumbSize(); scrollCarouselToCurrentTuple(); scrollCarouselToCurrentColumn(); });
+}
+let touchFlipped = false;
+let pinchZoom0 = 1;
+let pinchAnchorX = 0;
+let pinchAnchorY = 0;
+let pinchRaf = 0;
+/** The touch layout: its class, the ▦ strip and the gestures, each mapped onto an action a key already takes (docs/pointer-input.md: gestures-load-nothing). */
+function setupTouch() {
+    document.body.classList.add('touch-ui');
+    viewerEl.classList.toggle('strip-closed', stripClosed);
+    stripBtn.addEventListener('click', toggleStrip);
+    window.addEventListener('resize', () => { if (!stripClosed)
+        fitStripToViewer(); });
+    // A tile tap navigates first (the strip's own listener), then the picker gets out of the way.
+    viewerEl.addEventListener('click', (e) => {
+        if (!stripClosed && e.target.closest('#carousel .carousel-row'))
+            toggleStrip();
+    });
+    statusInfoEl.addEventListener('click', () => { zoom = 1; panX = panY = 0; render(); });
+    const swapWithPrevious = () => {
+        const temp = currentModalityIndex;
+        currentModalityIndex = previousModalityIndex;
+        previousModalityIndex = temp;
+        render();
+        centreOnCurrentModality();
+    };
+    // The same image-area coordinates handleWheel zooms about.
+    const viewerPoint = (x, y) => {
+        const rect = viewerEl.getBoundingClientRect();
+        const off = carouselOffsetPx();
+        return { x: x - rect.left - off - (rect.width - off) / 2, y: y - rect.top - rect.height / 2 };
+    };
+    (0,_touchInput__WEBPACK_IMPORTED_MODULE_13__.installTouchInput)(viewerEl, carouselEl, {
+        stepModality,
+        stepTuple: (dir) => {
+            const next = currentTupleIndex + dir;
+            if (isMultiTupleMode && next >= 0 && next < tuples.length)
+                loadTuple(asTuple(next));
+        },
+        flipStart: () => {
+            if (!images.length || previousModalityIndex === currentModalityIndex)
+                return;
+            if (hiddenModalities.has(modalityOrder[previousModalityIndex]))
+                return;
+            touchFlipped = true;
+            swapWithPrevious();
+        },
+        flipEnd: () => {
+            if (!touchFlipped)
+                return;
+            touchFlipped = false;
+            swapWithPrevious();
+        },
+        pinchStart: (x, y) => {
+            const p = viewerPoint(x, y);
+            pinchZoom0 = zoom;
+            pinchAnchorX = (p.x - panX) / zoom;
+            pinchAnchorY = (p.y - panY) / zoom;
+        },
+        pinchMove: (scale, x, y) => {
+            const p = viewerPoint(x, y);
+            zoom = Math.max(0.1, Math.min(50, pinchZoom0 * scale));
+            panX = p.x - pinchAnchorX * zoom;
+            panY = p.y - pinchAnchorY * zoom;
+            if (pinchRaf === 0)
+                pinchRaf = requestAnimationFrame(() => { pinchRaf = 0; render(); });
+        },
+        scrollStrip: (dx, dy) => {
+            if (dx !== 0 && carouselHScrollEl)
+                carouselHScrollEl.scrollLeft += dx;
+            if (dy !== 0)
+                queueCarouselWheel(dy);
+        },
+    });
+}
 function handleKeyDown(e) {
     // Modal for keys, as the host menu it replaced was: Del behind an open menu is a permanent file delete.
     if ((0,_contextMenu__WEBPACK_IMPORTED_MODULE_7__.isContextMenuOpen)())
@@ -7473,15 +8154,7 @@ function handleKeyDown(e) {
         case 'ArrowRight':
         case 'ArrowLeft': {
             e.preventDefault();
-            // Cycling skips hidden pills; click and digit jump still reach them (docs/session-files.md: hidden-is-presentation-only).
-            const target = (0,_modalityVisibility__WEBPACK_IMPORTED_MODULE_1__.nextVisibleModality)(currentModalityIndex, e.code === 'ArrowRight' ? 1 : -1, hiddenByDisplay());
-            if (target !== currentModalityIndex) {
-                previousModalityIndex = currentModalityIndex;
-                currentModalityIndex = asDisplay(target);
-                render();
-                centreOnCurrentModality();
-                columnReport.keyed(currentModalityIndex);
-            }
+            stepModality(e.code === 'ArrowRight' ? 1 : -1);
             break;
         }
         case 'BracketLeft':
@@ -7569,7 +8242,7 @@ function handleWheel(e) {
     const delta = (0,_axisScroll__WEBPACK_IMPORTED_MODULE_9__.zoomFactor)(e.deltaY, e.altKey);
     const newZoom = Math.max(0.1, Math.min(50, zoom * delta));
     const rect = viewerEl.getBoundingClientRect();
-    const carouselOffset = isMultiTupleMode ? CAROUSEL_WIDTH : 0;
+    const carouselOffset = carouselOffsetPx();
     const mouseX = e.clientX - rect.left - carouselOffset - (rect.width - carouselOffset) / 2;
     const mouseY = e.clientY - rect.top - rect.height / 2;
     const zoomRatio = newZoom / zoom;
@@ -7730,7 +8403,7 @@ function setupCarouselResize() {
     const refit = (snap) => {
         carouselEl.style.width = CAROUSEL_WIDTH + 'px';
         carouselResizeEl.style.left = (CAROUSEL_WIDTH - 4) + 'px';
-        viewerEl.style.setProperty('--carousel-offset', CAROUSEL_WIDTH + 'px');
+        viewerEl.style.setProperty('--carousel-offset', carouselOffsetPx() + 'px');
         // Anchor the current row's viewport Y across the row-height change — re-centering per frame made it bob; only the bounds clamp may move it. Rounded: a fractional anchor lands the focused row on shifting subpixel boundaries.
         const anchorY = Math.round(currentTupleIndex * carouselRowHeight() - carouselOffset);
         updateCarouselThumbSize(snap);
