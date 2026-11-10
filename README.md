@@ -14,7 +14,7 @@ install and no server; it reads only the folder you open, or the files published
 > Issues opened against this repository cannot be fixed here, because the code that produced the
 > file does not live here.
 
-Built from `991ad511f29051692539240938faf14f5463a8d1` — version `0.7.0`.
+Built from `01eac16d3be1f93888d4f45be779a88e38649140` — version `0.7.0`.
 
 ## Use
 
